@@ -1,0 +1,164 @@
+---
+title: "Untitled"
+author: "Drew"
+date: "2024-06-24"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+library(patchwork)
+library(dplyr)
+library(presto)
+```
+
+### Reading in the data 
+
+```{r}
+
+datDir <- "~/Uni/research project/R_researchProject/Data/"
+list.files(datDir)
+
+rawDataTu <- Read10X(data.dir = file.path(datDir, "Tumor"))
+rawData9 <- Read10X(data.dir = file.path(datDir, "9_weeks"))
+rawData6 <- Read10X(data.dir = file.path(datDir, "6_weeks"))
+rawData3 <- Read10X(data.dir = file.path(datDir, "3_weeks"))
+
+datTu <- CreateSeuratObject(counts = rawDataTu, project = "tumor", min.cells = 3, min.features = 200)
+dat9 <- CreateSeuratObject(counts = rawData9, project = "week9", min.cells = 3, min.features = 200)
+dat6 <- CreateSeuratObject(counts = rawData6, project = "week6", min.cells = 3, min.features = 200)
+dat3 <- CreateSeuratObject(counts = rawData3, project = "week3", min.cells = 3, min.features = 200)
+
+
+datList <- list(datTu, dat9, dat6, dat3)
+datList <- list(tumor = datTu, week9 = dat9, week6 = dat6, week3 = dat3)
+#names(datList) <- c("tumor", "9weeks")
+
+rm(datTu, dat9, dat6, dat3)
+
+```
+
+### Quality control 
+
+# diagnostic plots 
+
+```{r}
+
+for (i in names(datList)) {
+  datList[[i]][["qc.mito"]] <- PercentageFeatureSet(datList[[i]], pattern = "^mt-")
+  
+  print(VlnPlot(datList[[i]], features = c("nFeature_RNA", "nCount_RNA", "qc.mito"), ncol = 3))
+  
+  plot1 <- FeatureScatter(datList[[i]], feature1 = "nCount_RNA", feature2 = "qc.mito")
+  plot2 <- FeatureScatter(datList[[i]], feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+  
+  print(plot1 + plot2)
+  
+  readline(prompt = paste(i, ": Press Enter to continue to the next dataset: "))
+}
+
+```
+
+# applying QC
+
+```{r}
+
+datList[["tumor"]] <- subset(datList[["tumor"]] , subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & qc.mito < 20)
+datList[["week9"]] <- subset(datList[["week9"]] , subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & qc.mito < 20)
+datList[["week6"]] <- subset(datList[["week6"]] , subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & qc.mito < 20)
+datList[["week3"]] <- subset(datList[["week3"]] , subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & qc.mito < 20)
+
+```
+
+### merge object 
+
+```{r}
+
+comboDat <- merge(x = datList[["tumor"]], y = list(datList[["week9"]], datList[["week6"]], datList[["week3"]]))
+
+```
+
+### running analysis prior to intergration 
+
+```{r}
+
+comboDat <- NormalizeData(comboDat)
+comboDat <- FindVariableFeatures(comboDat)
+comboDat <- ScaleData(comboDat)
+comboDat <- RunPCA(comboDat)
+
+comboDat <- FindNeighbors(comboDat, dims = 1:30, reduction = "pca")
+comboDat <- FindClusters(comboDat, resolution = 0.5, cluster.name = "unintegrated_clusters")
+
+comboDat <- RunUMAP(comboDat, dims = 1:30, reduction = "pca", reduction.name = "umap.unintegrated")
+DimPlot(comboDat, reduction = "umap.unintegrated", group.by = c("orig.ident", "seurat_clusters"))
+#DimPlot(comboDat, reduction = "umap", split.by = "orig.ident")
+
+```
+
+### intergreating layesr 
+
+```{r}
+comboDat <- IntegrateLayers(object = comboDat, method = CCAIntegration, orig.reduction = "pca", new.reduction = "integrated.cca",
+    verbose = FALSE)
+
+comboDat[["RNA"]] <- JoinLayers(comboDat[["RNA"]])
+
+comboDat <- FindNeighbors(comboDat, reduction = "integrated.cca", dims = 1:30)
+comboDat <- FindClusters(comboDat, resolution = 0.5)
+
+comboDat <- RunUMAP(comboDat, dims = 1:30, reduction = "integrated.cca")
+DimPlot(comboDat, reduction = "umap", group.by = c("orig.ident", "seurat_clusters"))
+
+table(Idents(comboDat))
+```
+
+
+
+
+### feature plots 
+
+```{r}
+FeaturePlot(comboDat, features = c("Cpa1"), reduction = "umap", split.by = "orig.ident") # acinar cells
+FeaturePlot(comboDat, features = c("Krt8"), reduction = "umap", split.by = "orig.ident") # ductal cells 
+FeaturePlot(comboDat, features = c("Clu"), split.by = "orig.ident") # metaplasic 
+FeaturePlot(comboDat, features = c("Agr2"), split.by = "orig.ident")
+FeaturePlot(comboDat, features = c("Muc5ac"), split.by = "orig.ident")
+
+VlnPlot(comboDat, features = "Krt18")
+VlnPlot(comboDat, features = "Krt19")
+VlnPlot(comboDat, features = "KRASJAXSEQ")
+VlnPlot(comboDat, features = "AF5060261")
+```
+
+### acinar, ductal, metaplastic 
+
+```{r}
+VlnPlot(comboDat, features = c("Cpa1", "Amy1", "Amy2a2"), ncol =1) # acinar 
+VlnPlot(comboDat, features = c("Krt19","Krt18", "Krt8", "Amy1", "Amy2a2", "Pyy", "Sst", "Sox9")) + RotatedAxis() # Ductal 
+VlnPlot(comboDat, features = c("Sox9", "Krt18", "Krt19", "Krt8", "Foxq1", "Onecut2", "Tff1")) + RotatedAxis() # Tumor
+VlnPlot(comboDat, features = c("Cpa1", "Clu", "Krt19", "Agr2", "Muc5ac", "Tff1", "Foxa1")) + RotatedAxis() # Tumor
+DotPlot(comboDat, features = c("Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) + RotatedAxis() # Tumor
+
+DotPlot(comboDat, features = c("Cpa1", "Amy1", "Amy2a2")) + RotatedAxis() # acinar 
+DotPlot(comboDat, features = c("Krt19","Krt18", "Krt8", "Amy1", "Amy2a2", "Pyy", "Sst", "Sox9")) + RotatedAxis() # Ductal 
+DotPlot(comboDat, features = c("Sox9", "Krt18", "Krt19", "Krt8", "Foxq1", "Onecut2", "Tff1")) + RotatedAxis() # Tumor
+
+DotPlot(comboDat, features = c("Cpa1", "Amy1", "Amy2a2","Krt19","Krt18", "Krt8", "Sox9","Foxq1", "Onecut2", "Tff1")) + RotatedAxis() # acinar 
+
+table(Idents(comboDat))
+
+clusIds<- c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16", "17", "18", "Ex2", "20", "21", "22", "23", "24", "25", "26", "Ex3", "Ex1", "Ex4", "30")
+names(clusIds) <- levels(comboDat)
+comboDat <- RenameIdents(comboDat, clusIds)
+DimPlot(comboDat, reduction = "umap", label = T, pt.size = 0.5)
+
+VlnPlot(comboDat, features = c("AF5060261", "KRASJAXSEQ"))
+test2 <- FetchData(comboDat, vars = c("AF5060261", "KRASJAXSEQ", "Kras202ENSMUSE00000380468","Kras202ENSMUSE00000545805", "Kras202ENSMUSE00000688734","Kras202ENSMUSE00000688737", "Kras202ENSMUSE00001248470", "Kras203ENSMUSE00000819954", "Kras203ENSMUSE00000840839", "Kras205ENSMUSE00000747850", "Kras205ENSMUSE00000766765", "Kras205ENSMUSE00000829581", "Kras207ENSMUSE00000732359", "Kras207ENSMUSE00001369794"))
+sum(test2$KRASJAXSEQ > 0)
+sum(test2$AF5060261 > 0)
+
+range(test2$KRASJAXSEQ)
+range(test2$AF5060261)
+```
+

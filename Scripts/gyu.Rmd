@@ -1,0 +1,284 @@
+---
+title: "Untitled"
+author: "Drew"
+date: "2024-06-09"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+library(patchwork)
+library(dplyr)
+library(presto)
+```
+
+```{r}
+week9 <- dat 
+```
+
+
+### Reading in the data 
+
+```{r}
+
+datDir <- "~/Uni/research project/R_researchProject/Data/Tumor"
+list.files(datDir)
+
+rawData <- Read10X(data.dir = datDir)
+
+dat <- CreateSeuratObject(counts = rawData, project = "pbmc3k-podcast", min.cells = 3, min.features = 200)
+
+dat
+
+```
+
+### Quality control 
+
+```{r}
+
+dat[["qc.mito"]] <- PercentageFeatureSet(dat, pattern = "^mt-")
+
+VlnPlot(dat, features = c("nFeature_RNA", "nCount_RNA", "qc.mito"), ncol = 3)
+
+plot1 <- FeatureScatter(dat, feature1 = "nCount_RNA", feature2 = "qc.mito")
+plot2 <- FeatureScatter(dat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+```
+
+# References 
+
+Ilicic, T., Kim, J. K., Kolodziejczyk, A. A., Bagger, F. O., McCarthy, D. J., Marioni, J. C., & Teichmann, S. A. (2016). Classification of low quality cells from single-cell RNA-seq data. Genome Biology, 17(1). https://doi.org/10.1186/s13059-016-0888-1
+
+### Subsetting data
+
+```{r}
+
+dat <- subset(dat, subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & qc.mito < 15)
+
+```
+
+### Data nomralisation 
+
+```{r}
+
+dat <- NormalizeData(dat, normalization.method = "LogNormalize", scale.factor = 10000)
+
+```
+
+# References 
+
+Chu, S. K., Zhao, S., Shyr, Y., & Liu, Q. (2022). Comprehensive evaluation of noise reduction methods for single-cell RNA sequencing data. Briefings in Bioinformatics, 23(2). https://doi.org/10.1093/bib/bbab565
+
+Hafemeister, C., & Satija, R. (2019). Normalization and variance stabilization of single-cell RNA-seq data using regularized negative binomial regression. Genome Biology, 20(1). https://doi.org/10.1186/s13059-019-1874-1
+
+### Feature selection 
+
+```{r}
+
+dat <- FindVariableFeatures(dat, selection.method = "vst", nfeatures = 2000)
+
+top10 <- head(VariableFeatures(dat), 10)
+
+plot1 <- VariableFeaturePlot(dat)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+#plot1 + plot2
+
+```
+
+### Scaling data 
+
+```{r}
+
+all.genes <- rownames(dat)
+dat <- ScaleData(dat, features = all.genes)
+
+```
+
+### Linear dimensional reduction - PCA
+
+```{r}
+
+dat <- RunPCA(dat, features = VariableFeatures(object = dat))
+print(dat[["pca"]], dims = 1:5, nfeatures = 5)
+
+```
+
+# Having a look at the most influential genes in our first two principle components
+
+```{r}
+
+VizDimLoadings(dat, dims = 1:2, reduction = "pca")
+
+```
+
+# Standard PCA plot 
+
+```{r}
+
+DimPlot(dat, reduction = "pca") + NoLegend()
+
+```
+
+# Heat maps  
+
+```{r}
+
+DimHeatmap(dat, dims = 1:10, cells = 500, balanced = TRUE)
+
+```
+
+# Elbow plot
+
+```{r}
+
+ElbowPlot(dat)
+
+```
+
+# References 
+
+Xiang, R., Wang, W., Yang, L., Wang, S., Xu, C., & Chen, X. (2021). A Comparison for Dimensionality Reduction Methods of Single-Cell RNA-seq Data. Frontiers in Genetics, 12. https://doi.org/10.3389/fgene.2021.646936
+
+### Cell clustering 
+
+```{r}
+
+dat <- FindNeighbors(dat, dims = 1:16)
+dat <- FindClusters(dat, resolution = 0.5)
+
+head(Idents(dat),10)
+
+```
+
+# References 
+
+Peng, L., Tian, X., Tian, G., Xu, J., Huang, X., Weng, Y., Yang, J., & Zhou, L. (2020). Single-cell RNA-seq clustering: datasets, models, and algorithms. In RNA Biology (Vol. 17, Issue 6, pp. 765–783). Taylor and Francis Inc. https://doi.org/10.1080/15476286.2020.1728961
+
+Petegrosso, R., Li, Z., & Kuang, R. (2019). Machine learning and statistical methods for clustering single-cell RNA-sequencing data. In Briefings in Bioinformatics (Vol. 21, Issue 4, pp. 1209–1223). Oxford University Press. https://doi.org/10.1093/bib/bbz063
+
+Seth, S., Mallik, S., Bhadra, T., & Zhao, Z. (2022). Dimensionality Reduction and Louvain Agglomerative Hierarchical Clustering for Cluster-Specified Frequent Biomarker Discovery in Single-Cell Sequencing Data. Frontiers in Genetics, 13. https://doi.org/10.3389/fgene.2022.828479
+
+Yu, L., Cao, Y., Yang, J. Y. H., & Yang, P. (2022). Benchmarking clustering algorithms on estimating the number of cell types from single-cell RNA-sequencing data. Genome Biology, 23(1). https://doi.org/10.1186/s13059-022-02622-0
+
+### UMAP projection 
+
+```{r}
+
+dat <- RunUMAP(dat, dims = 1:16)
+DimPlot(dat, reduction = "umap")
+
+FeaturePlot(dat, features = c("tdTomato" ))
+FeaturePlot(dat, features = c("Ctla4" ))
+
+
+FeaturePlot(dat, features = c("AF5060261", "KRASJAXSEQ", "Kras", "Cpa1", 
+"Kras202ENSMUSE00000380468",
+"Kras202ENSMUSE00000545805",
+"Kras202ENSMUSE00000688734",
+"Kras202ENSMUSE00000688737",
+"Kras202ENSMUSE00001248470",
+"Kras203ENSMUSE00000819954",
+"Kras203ENSMUSE00000840839",
+"Kras205ENSMUSE00000747850",
+"Kras205ENSMUSE00000766765",
+"Kras205ENSMUSE00000829581",
+"Kras207ENSMUSE00000732359",
+"Kras207ENSMUSE00001369794"))
+
+test2 <- FetchData(dat, vars = c("AF5060261", "KRASJAXSEQ", "Kras202ENSMUSE00000380468","Kras202ENSMUSE00000545805", "Kras202ENSMUSE00000688734","Kras202ENSMUSE00000688737", "Kras202ENSMUSE00001248470", "Kras203ENSMUSE00000819954", "Kras203ENSMUSE00000840839", "Kras205ENSMUSE00000747850", "Kras205ENSMUSE00000766765", "Kras205ENSMUSE00000829581", "Kras207ENSMUSE00000732359", "Kras207ENSMUSE00001369794", "Kras"))
+
+sum(test2$KRASJAXSEQ > 0)
+sum(test2$AF5060261 > 0)
+
+colSums(test2)
+                  
+head(test)
+
+VlnPlot(dat, features = c("AF5060261", "KRASJAXSEQ", "Kras"))
+
+```
+
+```{r}
+cluster15.markers <- FindMarkers(dat, ident.1 = 15)
+head(cluster15.markers, n = 20)
+
+cluster16.markers <- FindMarkers(dat, ident.1 = 16, ident.2 = c( "15"))
+head(cluster16.markers, n = 20)
+
+cluster17.markers <- FindMarkers(dat, ident.1 = 17)
+head(cluster17.markers, n = 20)
+
+cluster18.markers <- FindMarkers(dat, ident.1 = 18)
+head(cluster18.markers, n = 20)
+```
+
+
+```{r}
+FeaturePlot(dat, features = c("Col1a1", "Col1a2", "Dcn"))
+
+FeaturePlot(dat, features = c("Cpa1", "Krt19", "Foxq1", "Onecut2")) #acinar
+FeaturePlot(dat, features = c("Clu", "Krt19")) #acinar
+FeaturePlot(dat, features = c("Agr2", "Muc5ac", "Tff1")) #acinar
+FeaturePlot(dat, features = c("Foxq1", "Sox9", "Krt19", "Tff1")) #acinar
+FeaturePlot(dat, features = c("AF5060261", "KRASJAXSEQ"))
+
+VlnPlot(dat, features = c("AF5060261", "KRASJAXSEQ", "Foxq1", "Sox9", "Krt19", "Tff1"))
+
+table(Idents(dat))
+```
+
+```{r}
+FeaturePlot(week3, features = c("Col1a1", "Col1a2", "Dcn"))
+
+FeaturePlot(week9, features = c("Cpa1", "Krt19")) #acinar
+FeaturePlot(week3, features = c("Clu", "Krt19")) #acinar
+FeaturePlot(week3, features = c("Agr2", "Muc5ac", "Tff1")) #acinar
+FeaturePlot(week3, features = c("Foxq1", "Sox9", "Krt19", "Tff1")) #acinar
+FeaturePlot(week3, features = c("AF5060261", "KRASJAXSEQ"))
+
+VlnPlot(week3, features = c("AF5060261", "KRASJAXSEQ", "Foxq1", "Sox9", "Krt19", "Tff1"))
+
+DimPlot(week9, reduction = "umap")
+table(Idents(week9))
+```
+
+
+
+```{r}
+
+test1 <- FetchData(week3, vars = c("AF5060261", "KRASJAXSEQ", "Kras202ENSMUSE00000380468","Kras202ENSMUSE00000545805", "Kras202ENSMUSE00000688734","Kras202ENSMUSE00000688737", "Kras202ENSMUSE00001248470", "Kras203ENSMUSE00000819954", "Kras203ENSMUSE00000840839", "Kras205ENSMUSE00000747850", "Kras205ENSMUSE00000766765", "Kras205ENSMUSE00000829581", "Kras207ENSMUSE00000732359", "Kras207ENSMUSE00001369794", "Kras"))
+
+test2 <- FetchData(week6, vars = c("AF5060261", "KRASJAXSEQ", "Kras202ENSMUSE00000380468","Kras202ENSMUSE00000545805", "Kras202ENSMUSE00000688734","Kras202ENSMUSE00000688737", "Kras202ENSMUSE00001248470", "Kras203ENSMUSE00000819954", "Kras203ENSMUSE00000840839", "Kras205ENSMUSE00000747850", "Kras205ENSMUSE00000766765", "Kras205ENSMUSE00000829581", "Kras207ENSMUSE00000732359", "Kras207ENSMUSE00001369794", "Kras"))
+
+test3 <- FetchData(week9, vars = c("AF5060261", "KRASJAXSEQ", "Kras202ENSMUSE00000380468","Kras202ENSMUSE00000545805", "Kras202ENSMUSE00000688734","Kras202ENSMUSE00000688737", "Kras202ENSMUSE00001248470", "Kras203ENSMUSE00000819954", "Kras203ENSMUSE00000840839", "Kras205ENSMUSE00000747850", "Kras205ENSMUSE00000766765", "Kras205ENSMUSE00000829581", "Kras207ENSMUSE00000732359", "Kras207ENSMUSE00001369794", "Kras"))
+
+test4 <- FetchData(dat, vars = c("AF5060261", "KRASJAXSEQ", "Kras202ENSMUSE00000380468","Kras202ENSMUSE00000545805", "Kras202ENSMUSE00000688734","Kras202ENSMUSE00000688737", "Kras202ENSMUSE00001248470", "Kras203ENSMUSE00000819954", "Kras203ENSMUSE00000840839", "Kras205ENSMUSE00000747850", "Kras205ENSMUSE00000766765", "Kras205ENSMUSE00000829581", "Kras207ENSMUSE00000732359", "Kras207ENSMUSE00001369794", "Kras"))
+
+colSums(test1)
+colSums(test2)
+colSums(test3)
+colSums(test4)
+
+
+```
+
+
+
+```{r}
+
+datList <- list(week3, week6, week9, dat)
+sumMarkers <- list()
+
+for (i in names(datList)) {
+sumMarkers[[i]] <- FetchData(datList[[i]] , vars = c("AF5060261", "KRASJAXSEQ", "Kras202ENSMUSE00000380468","Kras202ENSMUSE00000545805", "Kras202ENSMUSE00000688734","Kras202ENSMUSE00000688737", "Kras202ENSMUSE00001248470", "Kras203ENSMUSE00000819954", "Kras203ENSMUSE00000840839", "Kras205ENSMUSE00000747850", "Kras205ENSMUSE00000766765", "Kras205ENSMUSE00000829581", "Kras207ENSMUSE00000732359", "Kras207ENSMUSE00001369794", "Kras"))
+}
+
+sum(test2$KRASJAXSEQ > 0)
+sum(test2$AF5060261 > 0)
+
+colSums(test2)
+
+rm(datList)
+```
+

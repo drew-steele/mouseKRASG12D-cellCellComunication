@@ -1,0 +1,122 @@
+---
+title: "Untitled"
+author: "Drew"
+date: "2024-06-24"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+library(patchwork)
+library(dplyr)
+library(presto)
+```
+
+### Reading in the data 
+
+```{r}
+
+datDir <- "~/Uni/research project/R_researchProject/Data/Tumor"
+list.files(datDir)
+
+rawData <- Read10X(data.dir = datDir)
+
+dat <- CreateSeuratObject(counts = rawData, project = "pbmc3k-podcast", min.cells = 3, min.features = 200)
+
+dat
+
+```
+
+### Quality control 
+
+```{r}
+
+dat[["qc.mito"]] <- PercentageFeatureSet(dat, pattern = "^mt-")
+
+VlnPlot(dat, features = c("nFeature_RNA", "nCount_RNA", "qc.mito"), ncol = 3)
+
+plot1 <- FeatureScatter(dat, feature1 = "nCount_RNA", feature2 = "qc.mito")
+plot2 <- FeatureScatter(dat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+```
+
+### Subsetting data
+
+```{r}
+
+dat <- subset(dat, subset = nFeature_RNA > 500 & nFeature_RNA < 7000 & qc.mito < 15)
+
+```
+
+### Clustering
+
+```{r}
+set.seed(101)
+
+dat <- NormalizeData(dat, normalization.method = "LogNormalize", scale.factor = 10000)
+dat <- FindVariableFeatures(dat, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(dat)
+dat <- ScaleData(dat, features = all.genes)
+dat <- RunPCA(dat, features = VariableFeatures(object = dat))
+ElbowPlot(dat)
+dat <- FindNeighbors(dat, dims = 1:30)
+dat <- FindClusters(dat, resolution = 0.5)
+
+dat <- RunUMAP(dat, dims = 1:30)
+DimPlot(dat, reduction = "umap")
+```
+
+### idnetifying marker genes
+
+```{r}
+allMarkers <- FindAllMarkers(dat)
+allMarkers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1)
+```
+
+
+### acinar, ductal, metaplastic 
+
+```{r}
+VlnPlot(dat, features = c("Cpa1", "Amy1", "Amy2a2"), ncol =1) # acinar 
+VlnPlot(dat, features = c("Krt19","Krt18", "Krt8", "Amy1", "Amy2a2", "Pyy", "Sst", "Sox9")) + RotatedAxis() # Ductal 
+VlnPlot(dat, features = c("Sox9", "Krt18", "Krt19", "Krt8", "Foxq1", "Onecut2", "Tff1")) + RotatedAxis() # Tumor
+VlnPlot(dat, features = c("Cpa1", "Clu", "Krt19", "Agr2", "Muc5ac", "Tff1", "Foxa1")) + RotatedAxis() # Tumor
+DotPlot(dat, features = c("Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) + RotatedAxis() # Tumor
+
+DotPlot(dat, features = c("Cpa1", "Amy1", "Amy2a2")) + RotatedAxis() # acinar 
+DotPlot(dat, features = c("Krt19","Krt18", "Krt8", "Amy1", "Amy2a2", "Pyy", "Sst", "Sox9")) + RotatedAxis() # Ductal 
+DotPlot(dat, features = c("Sox9", "Krt18", "Krt19", "Krt8", "Foxq1", "Onecut2", "Tff1")) + RotatedAxis() # Tumor
+
+DotPlot(dat, features = c("Cpa1", "Amy1", "Amy2a2","Krt19","Krt18", "Krt8", "Sox9","Foxq1", "Onecut2", "Tff1")) + RotatedAxis()
+
+table(Idents(dat))
+
+clusIds<- c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "Ex2", "Ex1", "14", "15", "16", "17", "18", "19", "20", "21", "22")
+names(clusIds) <- levels(dat)
+dat <- RenameIdents(dat, clusIds)
+DimPlot(dat, reduction = "umap", label = T, pt.size = 0.5)
+```
+
+### Fibroblasts
+
+```{r}
+#VlnPlot(dat, features = c("Col1a1"), ncol =1) # acinar 
+#DotPlot(dat, features = c("Col1a1"))
+
+#clusIds<- c("0", "1", "Fibro1", "3", "Fibro2", "5", "Fibro3", "7", "8", "9", "10", "Ductal", "12", "13", "14", "Acinar", "16", "17", "Pos exocrine", "19", "20")
+#names(clusIds) <- levels(dat)
+#dat <- RenameIdents(dat, clusIds)
+#DimPlot(dat, reduction = "umap", label = T, pt.size = 0.5)
+```
+
+
+```{r}
+VlnPlot(dat, features = c("AF5060261", "KRASJAXSEQ"))
+test2 <- FetchData(dat, vars = c("AF5060261", "KRASJAXSEQ", "Kras202ENSMUSE00000380468","Kras202ENSMUSE00000545805", "Kras202ENSMUSE00000688734","Kras202ENSMUSE00000688737", "Kras202ENSMUSE00001248470", "Kras203ENSMUSE00000819954", "Kras203ENSMUSE00000840839", "Kras205ENSMUSE00000747850", "Kras205ENSMUSE00000766765", "Kras205ENSMUSE00000829581", "Kras207ENSMUSE00000732359", "Kras207ENSMUSE00001369794", "Kras"))
+sum(test2$KRASJAXSEQ > 0)
+sum(test2$AF5060261 > 0)
+```
+
