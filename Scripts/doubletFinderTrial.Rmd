@@ -1,0 +1,448 @@
+---
+title: "doubletFinderTrial"
+author: "Drew"
+date: "2024-06-26"
+output: html_document
+---
+
+
+```{r}
+library(Seurat)
+library(patchwork)
+library(dplyr)
+library(presto)
+library(gridExtra)
+library(grid)
+
+library(Matrix)
+library(fields)
+library(KernSmooth)
+library(ROCR)
+library(parallel)
+library(DoubletFinder)
+```
+
+
+### Reading in the data 
+
+```{r}
+
+datDir <- "~/Uni/research project/R_researchProject/Data/Filtered2Markers"
+list.files(datDir)
+
+rawDataTu <- Read10X(data.dir = file.path(datDir, "Tumor"))
+rawData9 <- Read10X(data.dir = file.path(datDir, "9weeks"))
+rawData6 <- Read10X(data.dir = file.path(datDir, "6weeks"))
+rawData3 <- Read10X(data.dir = file.path(datDir, "3weeks"))
+
+datTu <- CreateSeuratObject(counts = rawDataTu, project = "tumor", min.cells = 3, min.features = 200)
+dat9 <- CreateSeuratObject(counts = rawData9, project = "week9", min.cells = 3, min.features = 200)
+dat6 <- CreateSeuratObject(counts = rawData6, project = "week6", min.cells = 3, min.features = 200)
+dat3 <- CreateSeuratObject(counts = rawData3, project = "week3", min.cells = 3, min.features = 200)
+
+datList <- list(datTu, dat9, dat6, dat3)
+datList <- list(tumor = datTu, week9 = dat9, week6 = dat6, week3 = dat3)
+#names(datList) <- c("tumor", "9weeks")
+
+rm(datTu, dat9, dat6, dat3)
+
+```
+
+```{r}
+
+sweepResList <- list()
+sweepSumList <- list()
+bcmvnList <- list()
+homotypList <- list()
+nExp_poi.adj <- list()
+datListFilt <- list()
+
+for (i in names(datList)) {
+  datList[[i]][["qc.mito"]] <- PercentageFeatureSet(datList[[i]], pattern = "^mt-")
+  
+  print(VlnPlot(datList[[i]], features = c("nFeature_RNA", "nCount_RNA", "qc.mito"), ncol = 3))
+  
+  plot1 <- FeatureScatter(datList[[i]], feature1 = "nCount_RNA", feature2 = "qc.mito")
+  plot2 <- FeatureScatter(datList[[i]], feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+  
+  print(plot1 + plot2)
+  
+  datList[[i]] <- subset(datList[[i]] , subset = nFeature_RNA > 200 & nCount_RNA > 1000 & nFeature_RNA < 6000
+                               & qc.mito < 15)
+  
+  datList[[i]] <- NormalizeData(datList[[i]])
+  datList[[i]] <- FindVariableFeatures(datList[[i]], selection.method = "vst", nfeatures = 2000)
+  datList[[i]] <- ScaleData(datList[[i]])
+  datList[[i]] <- RunPCA(datList[[i]])
+  datList[[i]] <- RunUMAP(datList[[i]], dims = 1:20, reduction = "pca")
+  datList[[i]] <- FindNeighbors(datList[[i]], dims = 1:20, reduction = "pca")
+  datList[[i]] <- FindClusters(datList[[i]], resolution = c(0.5))
+  
+  sweepResList[[i]] <- paramSweep(datList[[i]], PCs = 1:20, sct = FALSE)
+  sweepSumList[[i]] <- summarizeSweep(sweepResList[[i]], GT = FALSE)
+  bcmvnList[[i]] <- find.pK(sweepSumList[[i]])
+  homotypList[[i]] <- modelHomotypic(datList[[i]]@meta.data$seurat_clusters)
+  nExp_poi <- round(0.075*nrow(datList[[i]]@meta.data))
+  nExp_poi.adj[[i]] <- round(nExp_poi*(1-homotypList[[i]]))
+  datList[[i]] <- doubletFinder(datList[[i]], PCs = 1:20, pN = 0.25, pK = max(bcmvnList[[i]]$BCmetric),
+                              nExp = nExp_poi.adj[[i]], reuse.pANN = FALSE, sct = FALSE)
+  seurat_colnames <- colnames(datList[[i]]@meta.data)
+  seurat_colnames <- lapply(seurat_colnames, function(x) sub("_0.25.*", "", x))
+  colnames(datList[[i]]@meta.data) <- seurat_colnames
+  table(datList[[i]]@meta.data$DF.classifications)
+  datListFilt[[i]] <- subset(datList[[i]], subset = DF.classifications == 'Singlet')
+  
+  #cat(paste("QC for time point", i))
+}
+
+```
+
+
+### merge object 
+
+```{r}
+
+comboDat <- merge(x = datListFilt[["tumor"]], y = list(datListFilt[["week9"]], datListFilt[["week6"]], datListFilt[["week3"]]),
+                  project = 'KrasMouse')
+
+```
+
+### running analysis prior to intergration 
+
+```{r}
+
+comboDat <- NormalizeData(comboDat)
+comboDat <- FindVariableFeatures(comboDat)
+comboDat <- ScaleData(comboDat)
+comboDat <- RunPCA(comboDat)
+ElbowPlot(comboDat, ndims = 40)
+
+comboDat <- FindNeighbors(comboDat, dims = 1:30, reduction = "pca")
+comboDat <- FindClusters(comboDat, resolution = c(0.1, 0.3, 0.5, 0.7, 1))
+
+comboDat <- RunUMAP(comboDat, dims = 1:30, reduction = "pca")
+
+```
+
+# UMAP projections 
+
+```{r}
+
+umap01 <- DimPlot(comboDat, reduction = 'umap', group.by = "RNA_snn_res.0.1")
+umap03 <- DimPlot(comboDat, reduction = 'umap', group.by = "RNA_snn_res.0.3")
+umap05 <- DimPlot(comboDat, reduction = 'umap', group.by = "RNA_snn_res.0.5")
+umap07 <- DimPlot(comboDat, reduction = 'umap', group.by = "RNA_snn_res.0.7")
+umap1 <- DimPlot(comboDat, reduction = 'umap', group.by = "RNA_snn_res.1")
+umapIdent <- DimPlot(comboDat, reduction = 'umap', group.by = "orig.ident")
+
+grid.arrange(
+  umap01, umap03, umap05, 
+  umap07, umap1, umapIdent, 
+  ncol = 3, nrow = 2,
+  top = textGrob("Non-integrated conditions", gp=gpar(fontsize=20)) 
+)
+
+```
+
+
+### intergreating layesr 
+
+```{r}
+comboDat <- IntegrateLayers(object = comboDat, method = CCAIntegration, orig.reduction = "pca", new.reduction = "integrated.cca",
+    verbose = FALSE)
+
+comboDat[["RNA"]] <- JoinLayers(comboDat[["RNA"]])
+
+comboDat <- FindNeighbors(comboDat, reduction = "integrated.cca", dims = 1:30)
+comboDat <- FindClusters(comboDat, resolution = c(0.1, 0.3, 0.5, 0.7, 1))
+
+comboDat <- RunUMAP(comboDat, dims = 1:30, reduction = "integrated.cca")
+#DimPlot(comboDat, reduction = "umap", group.by = c("orig.ident", "seurat_clusters"))
+
+#table(Idents(comboDat))
+```
+
+# UMAP projections 
+
+```{r}
+
+umap01 <- DimPlot(comboDat, reduction = 'umap', group.by = "RNA_snn_res.0.1")
+umap03 <- DimPlot(comboDat, reduction = 'umap', group.by = "RNA_snn_res.0.3")
+umap05 <- DimPlot(comboDat, reduction = 'umap', group.by = "RNA_snn_res.0.5")
+umap07 <- DimPlot(comboDat, reduction = 'umap', group.by = "RNA_snn_res.0.7")
+umap1 <- DimPlot(comboDat, reduction = 'umap', group.by = "RNA_snn_res.1")
+umapIdent <- DimPlot(comboDat, reduction = 'umap', group.by = "orig.ident")
+
+grid.arrange(
+  umap01, umap03, umap05, 
+  umap07, umap1, umapIdent, 
+  ncol = 3, nrow = 2,
+  top = textGrob("Non-integrated conditions", gp=gpar(fontsize=20)) 
+)
+
+```
+
+
+### investigatign different cluster resoloutions 
+
+# exocrine cells 
+
+```{r}
+comboDat <- SetIdent(comboDat, value = "RNA_snn_res.0.5")
+DotPlot(comboDat, features = c("Cpa1", "Amy1", "Amy2a2","Krt19","Krt18", "Krt8", "Sox9","Foxq1", "Onecut2", "Tff1")) + RotatedAxis()
+comboDat <- RenameIdents(comboDat, "13" = "Ex1", 
+                         "17" = "Ex2", 
+                         "25" = "Krt and foxq", 
+                         "28" = "Whats this", 
+                         "12" = "High Cpa")
+table(Idents(comboDat))
+DimPlot(comboDat, reduction = 'umap', label = T)
+```
+
+```{r}
+comboDat <- SetIdent(comboDat, value = "RNA_snn_res.0.7")
+DotPlot(comboDat, features = c("Cpa1", "Amy1", "Amy2a2","Krt19","Krt18", "Krt8", "Sox9","Foxq1", "Onecut2", "Tff1")) + RotatedAxis()
+comboDat <- RenameIdents(comboDat, "14" = "Ex1", 
+                         "21" = "Ex2", 
+                         "28" = "Krt and foxq", 
+                         "32" = "Ex3", 
+                         "31" = "Intrest", 
+                         "13" = "High Cpa1")
+table(Idents(comboDat))
+DimPlot(comboDat, reduction = 'umap', label = T)
+```
+
+```{r}
+comboDat <- SetIdent(comboDat, value = "RNA_snn_res.1")
+DotPlot(comboDat, features = c("Cpa1", "Amy1", "Amy2a2","Krt19","Krt18", "Krt8", "Sox9","Foxq1", "Onecut2", "Tff1", "Pyy", "Sst", "Muc1")) + RotatedAxis()
+VlnPlot(comboDat, features = c("Cpa1"))
+VlnPlot(comboDat, features = c("Krt19"))
+VlnPlot(comboDat, features = c("Foxq1"))
+FeaturePlot(comboDat, features = c("Cpa1", "Krt19", "Foxq1", "Tff1"))
+
+comboDat <- RenameIdents(comboDat, "14" = "Ex1", 
+                         "24" = "Ex2", 
+                         "32" = "Krt and foxq", 
+                         "35" = "interest",
+                         "36" = "Ex3")
+table(Idents(comboDat))
+DimPlot(comboDat, reduction = 'umap', label = T) + NoLegend()
+```
+
+# fibroblasts 
+
+```{r}
+VlnPlot(comboDat, features = c("Col1a1"))
+DotPlot(comboDat, features = c("Col1a1"))
+comboDat <- RenameIdents(comboDat, "1" = "Fibro1", 
+                         "6" = "Fibro2", 
+                         "8" = "Fibro3",
+                         "18" = "Fibro4",
+                         "31" = "Fibro5", 
+                         "37" = "Fibro6")
+table(Idents(comboDat))
+DimPlot(comboDat, reduction = 'umap', label = T)
+```
+
+# other, inconclusive
+
+```{r}
+VlnPlot(comboDat, features = c("Resp18"))
+DotPlot(comboDat, features = c("Resp18"))
+VlnPlot(comboDat, features = c("Rgs5"))
+DotPlot(comboDat, features = c("Rgs5"))
+VlnPlot(comboDat, features = c("Pecam1"))
+DotPlot(comboDat, features = c("Pecam1"))
+
+DotPlot(comboDat, features = c("Pecam1", "Rgs5", "Resp18"))
+FeaturePlot(comboDat, features = "Pecam1")
+
+comboDat <- RenameIdents(comboDat, "13" = "Endothelium1", 
+                         "33" = "Endothelium2", 
+                         "34" = "Endothelium3")
+table(Idents(comboDat))
+DimPlot(comboDat, reduction = 'umap', label = T)
+```
+
+# immune cells 
+
+```{r}
+DotPlot(comboDat, features = c("Il7r", "Ccr7", "Ptprc", "Cd3d", "Cd3e", "Cd19", "Cd79b", "Amy1", "Amy2a2"))
+comboDat <- RenameIdents(comboDat, "4" = "Tcell1", 
+                         "5" = "Tcell2", 
+                         "7" = "Tcell3", 
+                         "10" = "Tcell4",
+                         "17" = "Tcell5", 
+                         "23" = "Tcell6", 
+                         "33" = "Tcell and Bcell like", 
+                         "0" = "Bcell1",
+                         "12" = "Bcell",
+                         "25" = "Bcell3",
+                         "22" = "weak Tcell and Bcell like")
+table(Idents(comboDat))
+DimPlot(comboDat, reduction = 'umap', label = T) + NoLegend()
+```
+
+# macrophages
+
+```{r}
+DotPlot(comboDat, features = c("Cd14", "Adgre1", "Cd52"))
+comboDat <- RenameIdents(comboDat, "2" = "Macrophage1", 
+                         "3" = "Macrophage2", 
+                         "9" = "Macrophage3", 
+                         "19" = "Pos macrophage",
+                         "28" = "Pos macrophage2")
+table(Idents(comboDat))
+DimPlot(comboDat, reduction = 'umap', label = T) + NoLegend()
+```
+
+# Endothelial 
+
+```{r}
+DotPlot(comboDat, features = c("Cdh5", "Pecam1"))
+comboDat <- RenameIdents(comboDat, "13" = "Endothelium1", 
+                         "30" = "Endothelium2", 
+                         "34" = "Endothelium3")
+table(Idents(comboDat))
+DimPlot(comboDat, reduction = 'umap', label = T) + NoLegend()
+```
+
+
+
+
+### moving forwar with res 1, identifying markers 
+
+# all markers
+
+```{r}
+allMarkers <- FindAllMarkers(comboDat)
+allMarkers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1)
+
+markersList <- list()
+clusIds <- levels(allMarkers$cluster)
+
+for (i in clusIds) {
+  markersList[[i]] <- allMarkers[allMarkers$cluster == as.character(i), ]
+}
+```
+
+```{r}
+head(markersList[["15"]], 20) # "Foxp1", "Foxn3" 
+head(markersList[["20"]], 20)
+head(markersList[["11"]], 20)
+head(markersList[["Ex3"]], 20)
+head(markersList[["10"]], 20)
+head(markersList[["2"]], 20)
+
+DotPlot(comboDat, features = c("Foxp1", "Foxn3"))
+
+markers15 <- markersList[["15"]]
+markers15 <- markers15[markers15$p_val_adj < 0.01 & markers15$avg_log2FC > 2,]
+markers20 <- markersList[["20"]]
+markers11 <- markersList[["11"]]
+
+
+```
+
+```{r}
+markers15_Ex <- FindMarkers(comboDat, ident.1 = 15, ident.2 = c("Ex1", "Ex2"))
+head(markers15_Ex, n = 20)
+```
+
+### examining QC removed cells 
+
+# doublets
+
+```{r}
+datDouble <- list()
+
+for (i in names(datList)) {
+  datDouble[[i]] <- subset(datList[[i]], subset = DF.classifications == 'Doublet')
+}
+
+comboDatDouble <- merge(x = datDouble[["tumor"]], y = list(datDouble[["week9"]], datDouble[["week6"]], datDouble[["week3"]]),
+                  project = 'KrasMouse')
+comboDatDouble <- NormalizeData(comboDatDouble)
+comboDatDouble <- FindVariableFeatures(comboDatDouble)
+comboDatDouble <- ScaleData(comboDatDouble)
+comboDatDouble <- RunPCA(comboDatDouble)
+#ElbowPlot(comboDat, ndims = 40)
+
+comboDatDouble <- FindNeighbors(comboDatDouble, dims = 1:30, reduction = "pca")
+comboDatDouble <- FindClusters(comboDatDouble, resolution = c(0.1, 0.3, 0.5, 0.7, 1))
+
+comboDatDouble <- RunUMAP(comboDatDouble, dims = 1:30, reduction = "pca")
+
+
+DimPlot(comboDatDouble, reduction = 'umap')
+DotPlot(comboDatDouble, features = c("Cpa1", "Amy1", "Amy2a2","Krt19","Krt18", "Krt8", "Sox9","Foxq1", "Onecut2", "Tff1")) + RotatedAxis()
+table(Idents(comboDatDouble))
+```
+
+# initial QC filters 
+
+```{r}
+
+datTu <- CreateSeuratObject(counts = rawDataTu, project = "tumor", min.cells = 3, min.features = 200)
+dat9 <- CreateSeuratObject(counts = rawData9, project = "week9", min.cells = 3, min.features = 200)
+dat6 <- CreateSeuratObject(counts = rawData6, project = "week6", min.cells = 3, min.features = 200)
+dat3 <- CreateSeuratObject(counts = rawData3, project = "week3", min.cells = 3, min.features = 200)
+
+QCremoveList <- list(datTu, dat9, dat6, dat3)
+QCremoveList <- list(tumor = datTu, week9 = dat9, week6 = dat6, week3 = dat3)
+
+QCremoveList <- list()
+
+for (i in names(QCremoveList)) {
+  
+  QCremoveList[[i]][["qc.mito"]] <- PercentageFeatureSet(QCremoveList[[i]], pattern = "^mt-")
+
+  
+  QCremoveList[[i]] <- subset(QCremoveList[[i]] , subset = nFeature_RNA > 6000
+                               & qc.mito > 15)
+  
+  QCremoveList[[i]] <- NormalizeData(QCremoveList[[i]])
+  QCremoveList[[i]] <- FindVariableFeatures(QCremoveList[[i]], selection.method = "vst", nfeatures = 2000)
+  QCremoveList[[i]] <- ScaleData(QCremoveList[[i]])
+  QCremoveList[[i]] <- RunPCA(QCremoveList[[i]])
+  QCremoveList[[i]] <- RunUMAP(QCremoveList[[i]], dims = 1:20, reduction = "pca")
+  QCremoveList[[i]] <- FindNeighbors(QCremoveList[[i]], dims = 1:20, reduction = "pca")
+  QCremoveList[[i]] <- FindClusters(QCremoveList[[i]], resolution = c(0.5))
+  
+  #cat(paste("QC for time point", i))
+}
+
+QCremoveList <- merge(x = QCremoveList[["tumor"]], y = list(QCremoveList[["week9"]], QCremoveList[["week6"]], QCremoveList[["week3"]]),
+                  project = 'KrasMouse')
+QCremoveList <- NormalizeData(QCremoveList)
+QCremoveList <- FindVariableFeatures(QCremoveList)
+QCremoveList <- ScaleData(QCremoveList)
+comboDatDouble <- RunPCA(QCremoveList)
+#ElbowPlot(comboDat, ndims = 40)
+
+comboDatDouble <- FindNeighbors(comboDatDouble, dims = 1:30, reduction = "pca")
+comboDatDouble <- FindClusters(comboDatDouble, resolution = c(0.1, 0.3, 0.5, 0.7, 1))
+
+comboDatDouble <- RunUMAP(comboDatDouble, dims = 1:30, reduction = "pca")
+
+
+DimPlot(comboDatDouble, reduction = 'umap')
+DotPlot(comboDatDouble, features = c("Cpa1", "Amy1", "Amy2a2","Krt19","Krt18", "Krt8", "Sox9","Foxq1", "Onecut2", "Tff1")) + RotatedAxis()
+table(Idents(comboDatDouble))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
