@@ -1,0 +1,97 @@
+---
+title: "ScType"
+author: "Drew"
+date: "2024-07-05"
+output: html_document
+---
+
+```{r}
+lapply(c("dplyr","Seurat","HGNChelper","openxlsx"), library, character.only = T)
+source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R"); source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
+library(biomaRt)
+```
+
+### formatting markers list 
+
+```{r}
+rawMarkUp <- read.xlsx("misc/markersUp.xlsx")
+rawMarkDown <- read.xlsx("misc/markersDown.xlsx")
+
+ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+ensembl_to_gene_name <- function(ensembl_id) {
+  genes <- getBM(attributes = c("ensembl_gene_id", "external_gene_name"),
+                 filters = "ensembl_gene_id",
+                 values = ensembl_id,
+                 mart = ensembl)
+  return(genes$external_gene_name)
+}
+
+markersUp <- rawMarkUp %>%
+  mutate_all(~ ifelse(is.na(.), NA, ensembl_to_gene_name(.)))
+markersDown <- rawMarkDown %>%
+  mutate_all(~ ifelse(is.na(.), NA, ensembl_to_gene_name(.)))
+
+write.csv(markersUp, "misc/markersUPformat.csv")
+write.csv(markersDown, "misc/markersDownformat.csv")
+
+### editing 
+
+markersUp <- read.csv("misc/markersUPformat.csv")
+markersDown <- read.csv("misc/markersDownformat.csv")
+
+
+cellTypes <- colnames(markersUp)
+gs_positive <- list()
+gs_negative <- list()
+
+for (i in cellTypes) {
+  gs_positive[[i]] <- toupper(markersUp[[i]])  # Remove NA values
+  gs_positive[[i]] <- as.character(na.omit(gs_positive[[i]]))
+  gs_negative[[i]] <- toupper(markersDown[[i]])  # Remove NA values
+  gs_negative[[i]] <- as.character(na.omit(gs_negative[[i]]))
+}
+
+markersList <- list(gs_positive = gs_positive, gs_negative = gs_negative)
+
+
+```
+
+### prepping data and running sc-type
+
+```{r}
+
+dat <- readRDS("processedData/fullLabels.rds")
+
+scaledDat <- as.matrix(dat[["RNA"]]$scale.data)
+
+es.max <- as.data.frame(sctype_score(scaledDat, scaled = TRUE, gs = markersList$gs_positive, gs2 = markersList$gs_negative))
+
+cL_resutls <- do.call("rbind", lapply(unique(dat@meta.data$cellAssignment), function(cl){
+    es.max.cl = sort(rowSums(es.max[ ,rownames(dat@meta.data[dat@meta.data$cellAssignment==cl, ])]), decreasing = !0)
+    head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl, ncells = sum(dat@meta.data$cellAssignment==cl)), 10)
+}))
+sctype_scores <- cL_resutls %>% group_by(cluster) %>% top_n(n = 1, wt = scores)  
+
+#test <- gs_positive[["Acinar.Cell"]]
+#DotPlot(dat, features = test, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+
+sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells/4] <- "Unknown"
+print(sctype_scores[,1:3])
+```
+
+### adding sc-type labels to meta data and plotting 
+
+```{r}
+dat@meta.data$sctype_classification = ""
+for(j in unique(sctype_scores$cluster)){
+  cl_type = sctype_scores[sctype_scores$cluster==j,]; 
+  dat@meta.data$sctype_classification[dat@meta.data$cellAssignment == j] = as.character(cl_type$type[1])
+}
+
+DimPlot(dat, reduction = "umap", label = TRUE, repel = TRUE, group.by = 'sctype_classification')  
+DimPlot(dat, reduction = "umap", group.by = "cellAssignment", label = T)
+dat <- SetIdent(dat, value = "sctype_classification")
+table(Idents(dat))
+```
+
