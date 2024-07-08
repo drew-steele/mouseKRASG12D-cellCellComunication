@@ -9,6 +9,7 @@ output: html_document
 lapply(c("dplyr","Seurat","HGNChelper","openxlsx"), library, character.only = T)
 source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R"); source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
 library(biomaRt)
+library(ComplexHeatmap)
 ```
 
 ### formatting markers list 
@@ -32,8 +33,8 @@ markersUp <- rawMarkUp %>%
 markersDown <- rawMarkDown %>%
   mutate_all(~ ifelse(is.na(.), NA, ensembl_to_gene_name(.)))
 
-write.csv(markersUp, "misc/markersUPformat.csv")
-write.csv(markersDown, "misc/markersDownformat.csv")
+#write.csv(markersUp, "misc/markersUPformat.csv")
+#write.csv(markersDown, "misc/markersDownformat.csv")
 
 ### editing 
 
@@ -60,7 +61,6 @@ markersList <- list(gs_positive = gs_positive, gs_negative = gs_negative)
 ### prepping data and running sc-type
 
 ```{r}
-
 dat <- readRDS("processedData/fullLabels.rds")
 
 scaledDat <- as.matrix(dat[["RNA"]]$scale.data)
@@ -69,15 +69,48 @@ es.max <- as.data.frame(sctype_score(scaledDat, scaled = TRUE, gs = markersList$
 
 cL_resutls <- do.call("rbind", lapply(unique(dat@meta.data$cellAssignment), function(cl){
     es.max.cl = sort(rowSums(es.max[ ,rownames(dat@meta.data[dat@meta.data$cellAssignment==cl, ])]), decreasing = !0)
-    head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl, ncells = sum(dat@meta.data$cellAssignment==cl)), 10)
+    head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl, ncells = sum(dat@meta.data$cellAssignment==cl)), 38)
 }))
 sctype_scores <- cL_resutls %>% group_by(cluster) %>% top_n(n = 1, wt = scores)  
 
-#test <- gs_positive[["Acinar.Cell"]]
-#DotPlot(dat, features = test, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
-
 sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells/4] <- "Unknown"
 print(sctype_scores[,1:3])
+
+```
+
+```{r}
+
+cL_resutls$cluster <- as.character(cL_resutls$cluster)
+heatMatrix <- matrix(0, nrow = length(unique(cL_resutls$type)), ncol = length(unique(cL_resutls$cluster)))
+rownames(heatMatrix) <- unique(cL_resutls$type)
+colnames(heatMatrix) <- unique(cL_resutls$cluster)
+
+for (i in 1:nrow(cL_resutls)) {
+  cell_type <- cL_resutls$type[i]
+  cluster <- cL_resutls$cluster[i]
+  score <- cL_resutls$scores[i]
+  
+  if (cell_type %in% rownames(heatMatrix) && cluster %in% colnames(heatMatrix)) {
+    heatMatrix[cell_type, cluster] <- score
+  }
+}
+
+Heatmap(heatMatrix, name = "Scores", cluster_rows = F, cluster_columns = F,
+        color_space = "LAB",
+        border_gp = gpar(col = "black"),
+        border = T)
+
+Heatmap(
+  heatMatrix,
+  name = "Scores",
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  color_space = "LAB",
+  cell_fun = function(j, i, x, y, width, height, fill) {
+    grid.rect(x, y, width, height, gp = gpar(col = "black", fill = NA))
+  }
+)
+
 ```
 
 ### adding sc-type labels to meta data and plotting 
@@ -89,9 +122,138 @@ for(j in unique(sctype_scores$cluster)){
   dat@meta.data$sctype_classification[dat@meta.data$cellAssignment == j] = as.character(cl_type$type[1])
 }
 
-DimPlot(dat, reduction = "umap", label = TRUE, repel = TRUE, group.by = 'sctype_classification')  
+DimPlot(dat, reduction = "umap", label = TRUE, group.by = 'sctype_classification')  
 DimPlot(dat, reduction = "umap", group.by = "cellAssignment", label = T)
+DimPlot(dat, reduction = "umap", group.by = "orig.ident", label = T)
 dat <- SetIdent(dat, value = "sctype_classification")
 table(Idents(dat))
+
+tolower(gs_positive[["Peri.Islet.Schwann.Cell"]])
+
+DotPlot(dat, features = c("Dclk1", "Vav1", "Pou2f3", "Il25", "Trpm5")) # tuft cells 
+DotPlot(dat, features = c("Ngfr","Egfl8","Gfra2","Gfra3","Gfra1","Slitrk2","Pnliprp1","Slitrk6","Olfml2a","Insc","Mpz","Gulp1","Sema3b","Lrrtm1","Fign","Vgll3")) # Peri.Islet.Schwann.Cell
 ```
 
+```{r}
+umapClus <- DimPlot(dat, reduction = 'umap' ,label = T) + NoLegend()
+umapTime <- DimPlot(dat, reduction = 'umap', group.by = "cellAssignment",label = T) + NoLegend()
+grid.arrange(umapClus, umapTime,
+             ncol = 2, nrow = 1,
+             top = textGrob("Sc-Type stuff", gp=gpar(fontsize=20)))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+exCells <- subset(dat, idents = c("Ductal.Cell", "Acinar.Cell", "Metaplastic"))
+DimPlot(exCells, reduction = "umap")
+table(Idents(exCells))
+```
+
+
+### prepping data and running sc-type
+
+```{r}
+dat <- readRDS("processedData/fullLabels.rds")
+
+
+scaledDat <- as.matrix(dat[["RNA"]]$scale.data)
+
+es.max <- as.data.frame(sctype_score(scaledDat, scaled = TRUE, gs = markersList$gs_positive, gs2 = markersList$gs_negative))
+
+cL_resutls <- do.call("rbind", lapply(unique(dat@meta.data$RNA_snn_res.1), function(cl){
+    es.max.cl = sort(rowSums(es.max[ ,rownames(dat@meta.data[dat@meta.data$RNA_snn_res.1==cl, ])]), decreasing = !0)
+    head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl, ncells = sum(dat@meta.data$RNA_snn_res.1==cl)), 10)
+}))
+sctype_scores <- cL_resutls %>% group_by(cluster) %>% top_n(n = 1, wt = scores)  
+
+sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells/4] <- "Unknown"
+print(sctype_scores[,1:3])
+```
+
+### adding sc-type labels to meta data and plotting 
+
+```{r}
+dat@meta.data$sctype_classification = ""
+for(j in unique(sctype_scores$cluster)){
+  cl_type = sctype_scores[sctype_scores$cluster==j,]; 
+  dat@meta.data$sctype_classification[dat@meta.data$RNA_snn_res.1 == j] = as.character(cl_type$type[1])
+}
+
+DimPlot(dat, reduction = "umap", label = TRUE, group.by = 'sctype_classification')  
+DimPlot(dat, reduction = "umap", group.by = "RNA_snn_res.1", label = T)
+dat <- SetIdent(dat, value = "sctype_classification")
+table(Idents(dat))
+
+tolower(gs_positive[["Peri.Islet.Schwann.Cell"]])
+
+DotPlot(dat, features = c("Dclk1", "Vav1", "Pou2f3", "Il25", "Trpm5")) # tuft cells 
+DotPlot(dat, features = c("Ngfr","Egfl8","Gfra2","Gfra3","Gfra1","Slitrk2","Pnliprp1","Slitrk6","Olfml2a","Insc","Mpz","Gulp1","Sema3b","Lrrtm1","Fign","Vgll3")) # Peri.Islet.Schwann.Cell
+```
+
+```{r}
+umapClus <- DimPlot(dat, reduction = 'umap' ,label = T) + NoLegend()
+umapTime <- DimPlot(dat, reduction = 'umap', group.by = "cellAssignment",label = T) + NoLegend()
+grid.arrange(umapClus, umapTime,
+             ncol = 2, nrow = 1,
+             top = textGrob("Sc-Type stuff", gp=gpar(fontsize=20)))
+```
+
+
+
+```{r}
+exCells2 <- subset(dat, idents = c("Ductal.Cell", "Acinar.Cell", "Metaplastic"))
+DimPlot(exCells2, reduction = "umap")
+table(Idents(exCells2))
+
+exCells2@meta.data <- exCells2@meta.data[, 1:4]
+
+dat <- exCells2 %>%
+  RunUMAP(reduction = 'harmony', dims = 1:20) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:20) %>%
+  FindClusters(resolution = c(0.1,0.3,0.5))
+
+DimPlot(dat, reduction = "umap")
+
+scaledDat <- as.matrix(dat[["RNA"]]$scale.data)
+
+es.max <- as.data.frame(sctype_score(scaledDat, scaled = TRUE, gs = markersList$gs_positive, gs2 = markersList$gs_negative))
+
+cL_resutls <- do.call("rbind", lapply(unique(dat@meta.data$seurat_clusters), function(cl){
+    es.max.cl = sort(rowSums(es.max[ ,rownames(dat@meta.data[dat@meta.data$seurat_clusters==cl, ])]), decreasing = !0)
+    head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl, ncells = sum(dat@meta.data$seurat_clusters==cl)), 10)
+}))
+sctype_scores <- cL_resutls %>% group_by(cluster) %>% top_n(n = 1, wt = scores)  
+
+sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells/4] <- "Unknown"
+print(sctype_scores[,1:3])
+```
+
+```{r}
+dat@meta.data$sctype_classification = ""
+for(j in unique(sctype_scores$cluster)){
+  cl_type = sctype_scores[sctype_scores$cluster==j,]; 
+  dat@meta.data$sctype_classification[dat@meta.data$seurat_clusters == j] = as.character(cl_type$type[1])
+}
+
+DimPlot(dat, reduction = "umap", label = TRUE, repel = TRUE, group.by = 'sctype_classification')  
+DimPlot(dat, reduction = "umap", group.by = "seurat_clusters", label = T)
+DimPlot(dat, reduction = "umap", group.by = "orig.ident", label = T)
+dat <- SetIdent(dat, value = "sctype_classification")
+table(Idents(dat))
+
+tolower(gs_positive[["Peri.Islet.Schwann.Cell"]])
+
+DotPlot(dat, features = c("Dclk1", "Vav1", "Pou2f3", "Il25", "Trpm5")) # tuft cells 
+DotPlot(dat, features = c("Ngfr","Egfl8","Gfra2","Gfra3","Gfra1","Slitrk2","Pnliprp1","Slitrk6","Olfml2a","Insc","Mpz","Gulp1","Sema3b","Lrrtm1","Fign","Vgll3")) # Peri.Islet.Schwann.Cell
+```
