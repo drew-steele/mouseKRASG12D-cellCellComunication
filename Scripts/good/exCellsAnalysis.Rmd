@@ -1,0 +1,238 @@
+---
+title: "Untitled"
+author: "Drew"
+date: "2024-07-18"
+output: html_document
+---
+### re-clustering ex cells
+
+```{r}
+exCells <- NormalizeData(exCells)
+exCells <- FindVariableFeatures(exCells)
+exCells <- ScaleData(exCells)
+exCells <- RunPCA(exCells)
+ElbowPlot(exCells, ndims = 40)
+
+exCells <- FindNeighbors(exCells, dims = 1:20, reduction = "pca")
+exCells <- FindClusters(exCells, resolution = c(0.1, 0.3, 0.5))
+exCells <- RunUMAP(exCells, dims = 1:20, reduction = "pca")
+
+exCells <- exCells %>%
+  RunHarmony(group.by.vars = 'orig.ident', plot_convergence = T)
+harmonyDatEmbed <- Embeddings(exCells, "harmony")
+harmonyDatEmbed[1:10,1:10]
+exCells <- exCells %>%
+  RunUMAP(reduction = 'harmony', dims = 1:20) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:20) %>%
+  FindClusters(resolution = c(0.1,0.3,0.5, 0.7, 1))
+
+p1 <- DimPlot(object = exCells, reduction = "harmony", pt.size = .1, group.by = "orig.ident")
+p2 <- VlnPlot(object = exCells, features = "harmony_1", group.by = "orig.ident",  pt.size = .1)
+plot_grid(p1,p2)
+
+
+
+umap3 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.1") + NoLegend()
+umap5 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.3") + NoLegend()
+umap7 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.5") + NoLegend()
+umap1 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "sctype0.5") + NoLegend()
+grid.arrange(umap3, umap5, umap7, umap1,
+             ncol = 2, nrow = 2,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+
+umap5 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.3") + NoLegend()
+umap1 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "orig.ident")
+grid.arrange(umap5, umap1,
+             ncol = 2, nrow = 1,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+```
+
+#### ref paper DE gene markers 
+
+```{r}
+scaledDat <- as.matrix(exCells[["RNA"]]$scale.data)
+
+refMarkers_All <- read.xlsx("misc/refPaperMarkers_exocrine.xlsx")
+refMarkers_All$cluster <- as.character(refMarkers_All$cluster)
+
+refMarkeresList_all <- list()
+refMarkeresList_allNeg <- list()
+clusIds <- unique(refMarkers_All$cluster)
+
+for (i in clusIds) {
+  refMarkeresList_all[[paste0(i, "_ref")]] <- head(refMarkers_All[refMarkers_All$cluster == i &
+                                                  refMarkers_All$avg_logFC > 0 ,], 100)
+  refMarkeresList_all[[paste0(i, "_ref")]] <- toupper(refMarkeresList_all[[paste0(i, "_ref")]]$gene)
+}
+
+#names(refMarkeresList_all)[names(refMarkeresList_all) %in% c("0_ref", "4_ref", "9_ref", "15_ref", "17_ref")] <- c("Ductal", "Tumour", "Acinar", "Acinar 2", "metaplastic")
+```
+
+
+#### running sctype - from paper reference DE
+
+```{r}
+es.max <- as.data.frame(sctype_score(scaledDat, scaled = TRUE, gs = refMarkeresList_all, gs2 = NULL))
+heatMapConfListRef <- list()
+
+# Loop over resolutions 0.5 and 0.7
+for (i in c("0.1", "0.3", "0.5")) {
+
+  # Process each unique cluster in the current resolution
+  cL_resutls <- do.call("rbind", lapply(unique(exCells@meta.data[[paste0("RNA_snn_res.", i)]]), function(cl) {
+    # Sort and aggregate scores for the current cluster
+    es.max.cl <- sort(rowSums(es.max[, rownames(exCells@meta.data[exCells@meta.data[[paste0("RNA_snn_res.", i)]] == cl, ])]),
+                      decreasing = TRUE)
+    head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl,
+                    ncells = sum(exCells@meta.data[[paste0("RNA_snn_res.", i)]] == cl)), 38)
+  }))
+
+  # Group results by cluster and select top scores
+  sctype_scores <- cL_resutls %>% group_by(cluster) %>% top_n(n = 1, wt = scores)
+
+  # Label scores below a threshold as "Unknown"
+  sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells / 4] <- "Unknown"
+  print(sctype_scores[, 1:3])
+
+  head(sctype_scores)
+
+  # Identify low-confidence clusters
+  lowConfidenceClusters <- sctype_scores[sctype_scores$scores < 1000, ]
+  sctype_scores <- sctype_scores %>%
+    mutate(type = ifelse(scores < 1000, paste(type, "lowConf"), type))
+  sctype_scores$type <- paste0(sctype_scores$cluster, "_", sctype_scores$type)
+
+  # Assign cluster types to metadata
+  exCells@meta.data[[paste0("sctypeRef", i)]] <- ""
+  for (j in unique(sctype_scores$cluster)) {
+    cl_type <- sctype_scores[sctype_scores$cluster == j, ]
+    exCells@meta.data[[paste0("sctypeRef", i)]][exCells@meta.data[[paste0("RNA_snn_res.", i)]] == j] <- as.character(cl_type$type[1])
+  }
+
+  heatMapConfListRef[[i]] <- cL_resutls
+}
+
+head(exCells@meta.data)
+```
+
+
+```{r}
+umap03 <- DimPlot(exCells, reduction = 'umap', group.by = "sctypeRef0.1",label = T) + NoLegend()
+umap05 <- DimPlot(exCells, reduction = 'umap', group.by = "sctypeRef0.3",label = T) + NoLegend()
+umap07 <- DimPlot(exCells, reduction = 'umap', group.by = "sctypeRef0.5",label = T) + NoLegend()
+umap1 <- DimPlot(exCells, reduction = 'umap', group.by = "sctype0.5",label = T) + NoLegend()
+grid.arrange(umap03, umap05, umap07, umap1, ncol = 2, nrow = 2,
+             top = textGrob("Harmony integration", gp=gpar(fontsize=20)))
+```
+
+
+```{r}
+exCells <- SetIdent(exCells, value = "RNA_snn_res.0.3")
+DimPlot(exCells, reduction = "umap", label = T)
+
+VlnPlot(exCells, features = c("Cpa1")) # Acinar 
+VlnPlot(exCells, features = c("Clu", "Krt19", "Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) # metaplastic 
+VlnPlot(exCells, features = c("Agr2", "Muc5ac", "Tff1")) # neoplastic 
+VlnPlot(exCells, features = c("Foxa1")) # Acinar 
+
+FeaturePlot(exCells, features = c("Cpa1", "Krt19", "Krt18", "Tff1"))
+FeaturePlot(exCells, features = c("Clu", "Onecut2", "Id1", "Foxq1"))
+
+FeaturePlot(exCells, features = c("nFeature_RNA"))
+
+VlnPlot(exCells, features = c("AF5060261", "KRASJAXSEQ"))
+FeaturePlot(exCells, features = c("AF5060261", "KRASJAXSEQ"))
+
+exCells <- RenameIdents(exCells, "0" = "Ductal / tumour", 
+                        "1" = "Acinar",
+                        "2" = "Metaplastic",
+                        "3" = "Uncertain",
+                        "4" = "Metaplastic cycling 1",
+                        "5" = "Uncertain pos tumour",
+                        "6" = "Metaplastic cycling 2",
+                        "7" = "Tumour / metaplastic",
+                        "8" = "Acinar / metaplastic",
+                        "9" = "Metaplastic cycling 3",
+                        "10" = "Uncertain high Id3")
+DimPlot(exCells, reduction = "umap", label = T)
+DimPlot(exCells, reduction = "umap", label = T, group.by = "sctype_classification05")
+DimPlot(exCells, reduction = "umap", label = T, group.by = "orig.ident")
+
+umap03 <- DimPlot(exCells, reduction = 'umap', group.by = "sctypeRef0.1",label = T) + NoLegend()
+umap05 <- DimPlot(exCells, reduction = 'umap', group.by = "sctypeRef0.3",label = T) + NoLegend()
+umap07 <- DimPlot(exCells, reduction = 'umap', group.by = "sctypeRef0.5",label = T) + NoLegend()
+umap1 <- DimPlot(exCells, reduction = 'umap',label = T) + NoLegend()
+grid.arrange(umap03, umap05, umap07, umap1, ncol = 2, nrow = 2,
+             top = textGrob("Harmony integration", gp=gpar(fontsize=20)))
+
+table(Idents(exCells))
+
+exCells@meta.data$cellNames <- Idents(exCells)
+```
+
+```{r}
+metaplasticCells <- subset(exCells, idents = c("Ductal / tumour",
+                        "Metaplastic",
+                        "Uncertain",
+                        "Metaplastic cycling 1",
+                        "Uncertain pos tumour",
+                        "Metaplastic cycling 2",
+                        "Tumour / metaplastic",
+                        "Acinar / metaplastic",
+                        "Metaplastic cycling 3",
+                        "Uncertain high Id3"))
+
+
+metaplasticCells <- NormalizeData(metaplasticCells)
+metaplasticCells <- FindVariableFeatures(metaplasticCells)
+metaplasticCells <- ScaleData(metaplasticCells)
+metaplasticCells <- RunPCA(metaplasticCells)
+ElbowPlot(metaplasticCells, ndims = 40)
+
+metaplasticCells <- FindNeighbors(metaplasticCells, dims = 1:20, reduction = "pca")
+metaplasticCells <- FindClusters(metaplasticCells, resolution = c(0.1, 0.3, 0.5))
+metaplasticCells <- RunUMAP(metaplasticCells, dims = 1:20, reduction = "pca")
+
+metaplasticCells <- metaplasticCells %>%
+  RunHarmony(group.by.vars = 'orig.ident', plot_convergence = T)
+harmonyDatEmbed <- Embeddings(metaplasticCells, "harmony")
+harmonyDatEmbed[1:10,1:10]
+metaplasticCells <- metaplasticCells %>%
+  RunUMAP(reduction = 'harmony', dims = 1:20) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:20) %>%
+  FindClusters(resolution = c(0.1,0.2,0.3))
+
+p1 <- DimPlot(object = metaplasticCells, reduction = "harmony", pt.size = .1, group.by = "orig.ident")
+p2 <- VlnPlot(object = metaplasticCells, features = "harmony_1", group.by = "orig.ident",  pt.size = .1)
+plot_grid(p1,p2)
+
+umap3 <- DimPlot(metaplasticCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.1") + NoLegend()
+umap5 <- DimPlot(metaplasticCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.2") + NoLegend()
+umap7 <- DimPlot(metaplasticCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.3") + NoLegend()
+umap1 <- DimPlot(metaplasticCells, reduction = 'umap' ,label = T, group.by = "cellNames") + NoLegend()
+grid.arrange(umap3, umap5, umap7, umap1,
+             ncol = 2, nrow = 2,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+```
+
+```{r}
+VlnPlot(exCells, features = c("Cpa1")) # Acinar 
+VlnPlot(exCells, features = c("Clu", "Krt19", "Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) # metaplastic 
+VlnPlot(exCells, features = c("Agr2", "Muc5ac", "Tff1")) # neoplastic 
+VlnPlot(exCells, features = c("Foxa1")) # Acinar 
+
+FeaturePlot(metaplasticCells, features = c("Cpa1", "Krt19", "Krt18", "Tff1"))
+FeaturePlot(metaplasticCells, features = c("Clu", "Onecut2", "Id1", "Foxq1"))
+
+FeaturePlot(metaplasticCells, features = c("Col1a1", "Rgs5", "Ptprc", "Pecam1"))
+VlnPlot(metaplasticCells, features = c("Col1a1", "Rgs5", "Ptprc", "Pecam1"))
+
+umap3 <- DimPlot(metaplasticCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.2") + NoLegend()
+umap5 <- DimPlot(metaplasticCells, reduction = 'umap' ,label = T, group.by = "orig.ident") + NoLegend()
+umap7 <- DimPlot(metaplasticCells, reduction = 'umap' ,label = T, group.by = "sctype0.5") + NoLegend()
+umap1 <- DimPlot(metaplasticCells, reduction = 'umap' ,label = T, group.by = "cellNames") + NoLegend()
+grid.arrange(umap3, umap5, umap7, umap1,
+             ncol = 2, nrow = 2,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+```
+
