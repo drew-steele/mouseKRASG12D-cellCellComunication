@@ -1,0 +1,701 @@
+---
+title: "Untitled"
+author: "Drew"
+date: "2024-07-14"
+output: html_document
+---
+
+
+### Reading in the data 
+
+```{r}
+
+datDir <- "~/Uni/research project/mouseKRASG12D-cellCellComunication/Data/Filtered2Markers"
+list.files(datDir)
+
+rawDataTu <- Read10X(data.dir = file.path(datDir, "Tumor"))
+rawData9 <- Read10X(data.dir = file.path(datDir, "9weeks"))
+rawData6 <- Read10X(data.dir = file.path(datDir, "6weeks"))
+rawData3 <- Read10X(data.dir = file.path(datDir, "3weeks"))
+
+datTu <- CreateSeuratObject(counts = rawDataTu, project = "tumor", min.cells = 3, min.features = 200)
+dat9 <- CreateSeuratObject(counts = rawData9, project = "week9", min.cells = 3, min.features = 200)
+dat6 <- CreateSeuratObject(counts = rawData6, project = "week6", min.cells = 3, min.features = 200)
+dat3 <- CreateSeuratObject(counts = rawData3, project = "week3", min.cells = 3, min.features = 200)
+
+datList <- list(datTu, dat9, dat6, dat3)
+datList <- list(tumor = datTu, week9 = dat9, week6 = dat6, week3 = dat3)
+#names(datList) <- c("tumor", "9weeks")
+
+rm(datTu, dat9, dat6, dat3, rawData3, rawData6, rawData9, rawDataTu)
+
+```
+
+```{r}
+for (i in names(datList)) {
+  datList[[i]][["qc.mito"]] <- PercentageFeatureSet(datList[[i]], pattern = "^mt-")
+  
+  print(VlnPlot(datList[[i]], features = c("nFeature_RNA", "nCount_RNA", "qc.mito"), ncol = 3))
+  
+  plot1 <- FeatureScatter(datList[[i]], feature1 = "nCount_RNA", feature2 = "qc.mito")
+  plot2 <- FeatureScatter(datList[[i]], feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+  
+  print(plot1 + plot2)
+  
+  cat(i)
+}
+```
+
+
+```{r}
+set.seed(101)
+
+sweepResList <- list()
+sweepSumList <- list()
+bcmvnList <- list()
+homotypList <- list()
+nExp_poi.adj <- list()
+datListFilt <- list()
+datListDoublet <- list()
+
+for (i in names(datList)) {
+  
+  datList[[i]] <- subset(datList[[i]] , subset = nFeature_RNA > 200 & nCount_RNA > 1000
+                               & qc.mito < 15)
+  
+  datList[[i]] <- NormalizeData(datList[[i]])
+  datList[[i]] <- FindVariableFeatures(datList[[i]], selection.method = "vst", nfeatures = 2000)
+  datList[[i]] <- ScaleData(datList[[i]])
+  datList[[i]] <- RunPCA(datList[[i]])
+  datList[[i]] <- RunUMAP(datList[[i]], dims = 1:20, reduction = "pca")
+  datList[[i]] <- FindNeighbors(datList[[i]], dims = 1:20, reduction = "pca")
+  datList[[i]] <- FindClusters(datList[[i]], resolution = c(0.5))
+  
+  sweepResList[[i]] <- paramSweep(datList[[i]], PCs = 1:20, sct = FALSE)
+  sweepSumList[[i]] <- summarizeSweep(sweepResList[[i]], GT = FALSE)
+  bcmvnList[[i]] <- find.pK(sweepSumList[[i]])
+  homotypList[[i]] <- modelHomotypic(datList[[i]]@meta.data$seurat_clusters)
+  nExp_poi <- round(0.061*nrow(datList[[i]]@meta.data))
+  nExp_poi.adj[[i]] <- round(nExp_poi*(1-homotypList[[i]]))
+  datList[[i]] <- doubletFinder(datList[[i]], PCs = 1:20, pN = 0.25, pK = max(bcmvnList[[i]]$BCmetric),
+                              nExp = nExp_poi.adj[[i]], reuse.pANN = FALSE, sct = FALSE)
+  seurat_colnames <- colnames(datList[[i]]@meta.data)
+  seurat_colnames <- lapply(seurat_colnames, function(x) sub("_0.25.*", "", x))
+  colnames(datList[[i]]@meta.data) <- seurat_colnames
+  table(datList[[i]]@meta.data$DF.classifications)
+  datListFilt[[i]] <- subset(datList[[i]], subset = DF.classifications == 'Singlet')
+  datListDoublet[[i]] <- subset(datList[[i]], subset = DF.classifications == 'Doublet')
+  
+  #cat(paste("QC for time point", i))
+}
+
+```
+
+### merge object 
+
+```{r}
+
+comboDat <- merge(x = datListFilt[["tumor"]], y = list(datListFilt[["week9"]], datListFilt[["week6"]], datListFilt[["week3"]]), project = 'KrasMouse')
+
+doubletDat <- merge(x = datListDoublet[["tumor"]], y = list(datListDoublet[["week9"]], datListDoublet[["week6"]], datListDoublet[["week3"]]), project = 'KrasMouse')
+
+
+saveRDS(comboDat, "./processedData/doublet/QCfiltered2.rds")
+saveRDS(doubletDat, "./processedData/doublet/doublets.rds")
+
+harmonyDat <- comboDat
+
+rm(comboDat, datList)
+
+```
+
+###### Harmony intergration
+
+### pre-processing
+
+```{r}
+set.seed(101)
+
+harmonyDat <- readRDS("./processedData/doublet/QCfiltered2.rds")
+
+head(harmonyDat@meta.data)
+
+harmonyDat <- NormalizeData(harmonyDat)
+harmonyDat <- FindVariableFeatures(harmonyDat, selection.method = "vst", nfeatures = 2000)
+harmonyDat <- ScaleData(harmonyDat)
+harmonyDat <- RunPCA(harmonyDat)
+ElbowPlot(harmonyDat, ndims = 40)
+
+harmonyDat <- FindNeighbors(harmonyDat, dims = 1:20, reduction = "pca")
+harmonyDat <- FindClusters(harmonyDat, resolution = c(0.1, 0.3, 0.5, 0.7, 1))
+
+harmonyDat <- RunUMAP(harmonyDat, dims = 1:20, reduction = "pca")
+
+umap1 <- DimPlot(harmonyDat, reduction = "umap", group.by = "RNA_snn_res.0.5", label = T) + NoLegend()
+grid.arrange(umap1, ncol = 1, nrow = 1,
+             top = textGrob("Pre harmony - res 0.5", gp=gpar(fontsize=20)))
+
+harmonyDat@meta.data$PreHarmony05res <- harmonyDat@meta.data$RNA_snn_res.0.5
+```
+
+#### intergration
+
+```{r}
+set.seed(101)
+
+harmonyDat <- harmonyDat %>%
+  RunHarmony(group.by.vars = 'orig.ident', plot_convergence = T)
+harmonyDatEmbed <- Embeddings(harmonyDat, "harmony")
+harmonyDatEmbed[1:10,1:10]
+harmonyDat <- harmonyDat %>%
+  RunUMAP(reduction = 'harmony', dims = 1:20) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:20) %>%
+  FindClusters(resolution = c(0.1,0.3,0.5, 0.7, 1))
+
+harmonyDat <- JoinLayers(harmonyDat)
+```
+
+### plots
+
+```{r}
+
+p1 <- DimPlot(object = harmonyDat, reduction = "harmony", pt.size = .1, group.by = "orig.ident")
+p2 <- VlnPlot(object = harmonyDat, features = "harmony_1", group.by = "orig.ident",  pt.size = .1)
+plot_grid(p1,p2)
+
+umapTime <- DimPlot(harmonyDat, reduction = 'umap', group.by = 'orig.ident', label = T) + NoLegend()
+umap01 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.0.1",label = T) + NoLegend()
+umap03 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.0.3",label = T) + NoLegend()
+umap05 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.0.5",label = T) + NoLegend()
+umap07 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.0.7",label = T) + NoLegend()
+umap1 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.1",label = T) + NoLegend()
+grid.arrange(umap01, umap03, umap05, umap07, umap1, umapTime, ncol = 3, nrow = 2,
+             top = textGrob("Harmony integration", gp=gpar(fontsize=20)))
+
+```
+
+
+####### SCtype labels 
+
+
+```{r}
+#lapply(c("dplyr","Seurat","HGNChelper","openxlsx"), library, character.only = T)
+source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/gene_sets_prepare.R"); source("https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/master/R/sctype_score_.R")
+library(biomaRt)
+library(ComplexHeatmap)
+library(dplyr)
+library(HGNChelper)
+library(openxlsx)
+library(grid)
+library(gridExtra)
+```
+
+### formatting markers list 
+
+```{r}
+
+markersUp <- read.csv("misc/markersUPformat.csv")
+markersDown <- read.csv("misc/markersDownformat.csv")
+
+
+cellTypes <- colnames(markersUp)
+gs_positive <- list()
+gs_negative <- list()
+
+for (i in cellTypes) {
+  gs_positive[[i]] <- toupper(markersUp[[i]])  # Remove NA values
+  gs_positive[[i]] <- as.character(na.omit(gs_positive[[i]]))
+  gs_negative[[i]] <- toupper(markersDown[[i]])  # Remove NA values
+  gs_negative[[i]] <- as.character(na.omit(gs_negative[[i]]))
+}
+
+markersList <- list(gs_positive = gs_positive, gs_negative = gs_negative)
+
+
+```
+
+#### ref paper DE gene markers 
+
+```{r}
+refMarkers_All <- read.xlsx("misc/refPaperMarkers_all.xlsx")
+refMarkers_All$cluster <- as.character(refMarkers_All$cluster)
+
+refMarkeresList_all <- list()
+refMarkeresList_allNeg <- list()
+clusIds <- unique(refMarkers_All$cluster)
+
+for (i in clusIds) {
+  refMarkeresList_all[[paste0(i, "_ref")]] <- head(refMarkers_All[refMarkers_All$cluster == i &
+                                                  refMarkers_All$avg_logFC > 0 ,], 100)
+  refMarkeresList_all[[paste0(i, "_ref")]] <- toupper(refMarkeresList_all[[paste0(i, "_ref")]]$gene)
+}
+
+names(refMarkeresList_all)[names(refMarkeresList_all) %in% c("0_ref", "4_ref", "9_ref", "15_ref", "17_ref")] <- c("Ductal", "Tumour", "Acinar", "Acinar 2", "metaplastic")
+```
+
+
+### prepping data and running sc-type
+
+```{r}
+dat <- readRDS("processedData/FullLabelsNew.rds")
+dat <- harmonyDat
+rm(harmonyDat)
+
+head(dat@meta.data)
+
+scaledDat <- as.matrix(dat[["RNA"]]$scale.data)
+```
+
+#### running sctype - from cell markers list
+
+```{r}
+es.max <- as.data.frame(sctype_score(scaledDat, scaled = TRUE, gs = markersList$gs_positive, gs2 = markersList$gs_negative))
+
+heatMapConfList <- list()
+
+# Loop over resolutions 0.5 and 0.7
+for (i in c("0.3", "0.5", "0.7", "1")) {
+
+  # Process each unique cluster in the current resolution
+  cL_resutls <- do.call("rbind", lapply(unique(dat@meta.data[[paste0("RNA_snn_res.", i)]]), function(cl) {
+    # Sort and aggregate scores for the current cluster
+    es.max.cl <- sort(rowSums(es.max[, rownames(dat@meta.data[dat@meta.data[[paste0("RNA_snn_res.", i)]] == cl, ])]),
+                      decreasing = TRUE)
+    head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl,
+                    ncells = sum(dat@meta.data[[paste0("RNA_snn_res.", i)]] == cl)), 38)
+  }))
+
+  # Group results by cluster and select top scores
+  sctype_scores <- cL_resutls %>% group_by(cluster) %>% top_n(n = 1, wt = scores)
+
+  # Label scores below a threshold as "Unknown"
+  sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells / 4] <- "Unknown"
+  print(sctype_scores[, 1:3])
+
+  head(sctype_scores)
+
+  # Identify low-confidence clusters
+  lowConfidenceClusters <- sctype_scores[sctype_scores$scores < 1000, ]
+  sctype_scores <- sctype_scores %>%
+    mutate(type = ifelse(scores < 1000, paste(type, "lowConf"), type))
+  sctype_scores$type <- paste0(sctype_scores$cluster, "_", sctype_scores$type)
+
+  # Assign cluster types to metadata
+  dat@meta.data[[paste0("sctype", i)]] <- ""
+  for (j in unique(sctype_scores$cluster)) {
+    cl_type <- sctype_scores[sctype_scores$cluster == j, ]
+    dat@meta.data[[paste0("sctype", i)]][dat@meta.data[[paste0("RNA_snn_res.", i)]] == j] <- as.character(cl_type$type[1])
+  }
+  
+  heatMapConfList[[i]] <- cL_resutls  
+  
+}
+
+head(dat@meta.data)
+```
+
+
+#### running sctype - from paper reference DE
+
+```{r}
+es.max <- as.data.frame(sctype_score(scaledDat, scaled = TRUE, gs = refMarkeresList_all, gs2 = NULL))
+heatMapConfListRef <- list()
+
+# Loop over resolutions 0.5 and 0.7
+for (i in c("0.3", "0.5", "0.7", "1")) {
+
+  # Process each unique cluster in the current resolution
+  cL_resutls <- do.call("rbind", lapply(unique(dat@meta.data[[paste0("RNA_snn_res.", i)]]), function(cl) {
+    # Sort and aggregate scores for the current cluster
+    es.max.cl <- sort(rowSums(es.max[, rownames(dat@meta.data[dat@meta.data[[paste0("RNA_snn_res.", i)]] == cl, ])]),
+                      decreasing = TRUE)
+    head(data.frame(cluster = cl, type = names(es.max.cl), scores = es.max.cl,
+                    ncells = sum(dat@meta.data[[paste0("RNA_snn_res.", i)]] == cl)), 38)
+  }))
+
+  # Group results by cluster and select top scores
+  sctype_scores <- cL_resutls %>% group_by(cluster) %>% top_n(n = 1, wt = scores)
+
+  # Label scores below a threshold as "Unknown"
+  sctype_scores$type[as.numeric(as.character(sctype_scores$scores)) < sctype_scores$ncells / 4] <- "Unknown"
+  print(sctype_scores[, 1:3])
+
+  head(sctype_scores)
+
+  # Identify low-confidence clusters
+  lowConfidenceClusters <- sctype_scores[sctype_scores$scores < 1000, ]
+  sctype_scores <- sctype_scores %>%
+    mutate(type = ifelse(scores < 1000, paste(type, "lowConf"), type))
+  sctype_scores$type <- paste0(sctype_scores$cluster, "_", sctype_scores$type)
+
+  # Assign cluster types to metadata
+  dat@meta.data[[paste0("sctypeRef", i)]] <- ""
+  for (j in unique(sctype_scores$cluster)) {
+    cl_type <- sctype_scores[sctype_scores$cluster == j, ]
+    dat@meta.data[[paste0("sctypeRef", i)]][dat@meta.data[[paste0("RNA_snn_res.", i)]] == j] <- as.character(cl_type$type[1])
+  }
+
+  heatMapConfListRef[[i]] <- cL_resutls
+}
+
+head(dat@meta.data)
+```
+
+```{r}
+
+umap03 <- DimPlot(dat, reduction = 'umap', group.by = "sctype0.3",label = T) + NoLegend()
+umap05 <- DimPlot(dat, reduction = 'umap', group.by = "sctype0.5",label = T) + NoLegend()
+umap07 <- DimPlot(dat, reduction = 'umap', group.by = "sctype0.7",label = T) + NoLegend()
+umap1 <- DimPlot(dat, reduction = 'umap', group.by = "sctype1",label = T) + NoLegend()
+grid.arrange(umap03, umap05, umap07, umap1, ncol = 2, nrow = 2,
+             top = textGrob("Harmony integration", gp=gpar(fontsize=20)))
+
+umap03 <- DimPlot(dat, reduction = 'umap', group.by = "sctypeRef0.3",label = T) + NoLegend()
+umap05 <- DimPlot(dat, reduction = 'umap', group.by = "sctypeRef0.5",label = T) + NoLegend()
+umap07 <- DimPlot(dat, reduction = 'umap', group.by = "sctypeRef0.7",label = T) + NoLegend()
+umap1 <- DimPlot(dat, reduction = 'umap', group.by = "sctypeRef1",label = T) + NoLegend()
+grid.arrange(umap03, umap05, umap07, umap1, ncol = 2, nrow = 2,
+             top = textGrob("Harmony integration", gp=gpar(fontsize=20)))
+
+
+umapClus <- DimPlot(dat, reduction = 'umap' ,label = T, 
+                    group.by = 'sctype05') + NoLegend()
+umapTime <- DimPlot(dat, reduction = 'umap', 
+                    group.by = "orig.ident",label = T)
+grid.arrange(umapClus, umapTime,
+             ncol = 2, nrow = 1,
+             top = textGrob("Sc-Type stuff", gp=gpar(fontsize=20)))
+
+DimPlot(dat, reduction = "umap", label = TRUE, group.by = 'sctypeRef1')  
+
+dat <- SetIdent(dat, value = "sctype_classification05")
+table(Idents(dat))
+```
+
+### heat map of assignment scores
+
+```{r}
+
+lowConfidenceClusters <- sctype_scores[sctype_scores$scores < 1000 ,]
+
+for (i in c("0.3", "0.5", "0.7", "1")) {
+
+  heatMapConfListRef[[i]]$cluster <- as.character(heatMapConfListRef[[i]]$cluster)
+  heatMatrix <- matrix(0, nrow = length(unique(heatMapConfListRef[[i]]$type)), 
+                       ncol = length(unique(heatMapConfListRef[[i]]$cluster)))
+  rownames(heatMatrix) <- unique(heatMapConfListRef[[i]]$type)
+  colnames(heatMatrix) <- unique(heatMapConfListRef[[i]]$cluster)
+  
+  for (j in 1:nrow(cL_resutls)) {
+    cell_type <- heatMapConfListRef[[i]]$type[j]
+    cluster <- heatMapConfListRef[[i]]$cluster[j]
+    score <- heatMapConfListRef[[i]]$scores[j]
+    
+    if (cell_type %in% rownames(heatMatrix) && cluster %in% colnames(heatMatrix)) {
+      heatMatrix[cell_type, cluster] <- score
+    }
+  }
+  
+  
+  Ht <- Heatmap(
+    heatMatrix,
+    name = "Scores",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    color_space = "LAB",
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      grid.rect(x, y, width, height, gp = gpar(col = "black", fill = NA))
+    }
+  )
+
+  print(Ht)
+  
+}
+
+
+for (i in c("0.3", "0.5", "0.7", "1")) {
+
+  heatMapConfList[[i]]$cluster <- as.character(heatMapConfList[[i]]$cluster)
+  heatMatrix <- matrix(0, nrow = length(unique(heatMapConfList[[i]]$type)), 
+                       ncol = length(unique(heatMapConfList[[i]]$cluster)))
+  rownames(heatMatrix) <- unique(heatMapConfList[[i]]$type)
+  colnames(heatMatrix) <- unique(heatMapConfList[[i]]$cluster)
+  
+  for (j in 1:nrow(cL_resutls)) {
+    cell_type <- heatMapConfList[[i]]$type[j]
+    cluster <- heatMapConfList[[i]]$cluster[j]
+    score <- heatMapConfList[[i]]$scores[j]
+    
+    if (cell_type %in% rownames(heatMatrix) && cluster %in% colnames(heatMatrix)) {
+      heatMatrix[cell_type, cluster] <- score
+    }
+  }
+  
+  
+  Ht <- Heatmap(
+    heatMatrix,
+    name = "Scores",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    color_space = "LAB",
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      grid.rect(x, y, width, height, gp = gpar(col = "black", fill = NA))
+    }
+  )
+
+  print(Ht)
+  
+}
+
+
+
+
+Heatmap(
+    heatMatrix[,as.character(lowConfidenceClusters$cluster)],
+    name = "Scores",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    color_space = "LAB",
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      grid.rect(x, y, width, height, gp = gpar(col = "black", fill = NA))
+    }
+  )
+```
+
+```{r}
+saveRDS(dat, "processedData/FullLabelsNew.rds")
+```
+
+
+#### inspecting low conf assignments 
+
+```{r}
+
+VlnPlot(dat, features = "nFeature_RNA", group.by = "sctype1") + NoLegend()
+VlnPlot(dat, features = "nCount_RNA", group.by = "sctype1") + NoLegend()
+VlnPlot(dat, features = "qc.mito", group.by = "sctype1") + NoLegend()
+
+```
+
+#### markers - all clusters 
+
+```{r}
+Markers <- FindAllMarkers(dat)
+Markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1)
+
+OverExpressedMarkers <- Markers[Markers$avg_log2FC > 0 ,]
+UnderExpressedMarkers <- Markers[Markers$avg_log2FC < 0 ,]
+
+topMarkers <- list()
+topMarkersUnder <- list()
+clusIds <- levels(Markers$cluster)
+
+for (i in clusIds) {
+  topMarkers[[i]] <- head(OverExpressedMarkers[OverExpressedMarkers$cluster == as.character(i), ], 500)
+  topMarkersUnder[[i]] <- head(UnderExpressedMarkers[UnderExpressedMarkers$cluster == as.character(i), ], 500)
+}
+
+markersListUp <- bind_rows(topMarkers)
+markersListDown <- bind_rows(topMarkersUnder)
+
+write.csv(markersListUp, "processedData/good/allClusterMarkersUp.csv")
+write.csv(markersListDown, "processedData/good/allClusterMarkersDown.csv")
+
+```
+
+
+### organising meta-data
+
+```{r}
+head(dat@meta.data)
+colnames(dat@meta.data)
+
+dat@meta.data$harmony.03 <- dat@meta.data$RNA_snn_res.0.3
+dat@meta.data$harmony.05 <- dat@meta.data$RNA_snn_res.0.5
+dat@meta.data$harmony.07 <- dat@meta.data$RNA_snn_res.0.7
+
+dat@meta.data <- dat@meta.data[, c("orig.ident", "nCount_RNA", "nFeature_RNA",  "qc.mito", "pANN", "DF.classifications", "PreHarmony05res", "sctypeRef0.3", "sctypeRef0.5", "sctypeRef0.7", "sctype0.3", "sctype0.5", "sctype0.7", "sctype1", "sctypeRef1")]
+```
+
+### markers items 
+
+```{r}
+acinar <- c("Angptl4", "Rarres2", "Cpb1", "Rbpjl", "Lyz3", "Olfm4", "Cela1", "Reg2", "Cela3b", "Clps", "Spink1", "Ptf1a", "Cel", "Aldob", "Pdzk1ip1", "Pla2g1b", "Reg3g", "Ctrb1", "AA467197", "Rnase1", "Try5", "Gdf15", "Klk1b16", "Anpep", "Pnliprp1", "Muc1", "Lgals2", "Klk1b11", "Pnlip", "Zg16", "Klk1b26", "Try4", "Cpa1", "Prss2", "Prss1l", "Cela2a", "Klk1b9", "Reg1", "Klk1b22", "Cxcl17", "Prss1", "Klk1b8", "Klk1b1", "Klk1b27", "Klk1b24", "Klk1", "Klk1b5", "Klk1b4", "Klk1b3", "Klk1b21", "Reg3d", "Reg3b", "Prss3l", "Prss3", "Try10", "Cpa2", "Cela3a", "Reg3a", "Sycn", "Cfb", "Gm20547")
+ductal <- c("Aqp1", "Aldh1a3", "Slpi", "Wfdc2", "Mmp7", "Perp", "Hnf1b", "Krt19", "Cldn10", "Cldn1", "Serping1", "Tff2", "Tff1", "Pigr", "Ambp", "Spp1", "Pdx1", "Anxa4", "Pdlim3", "Tspan8", "Krt20", "Gdf15", "Cftr", "Serpina5", "Muc1", "Onecut1", "Lgals4", "Cfb", "Gm20547")
+metaplastic <- c("Sox9", "Id3", "Krt19", "Runx1", "Krt18", "Kras", "Foxq1", "Muc1", "Onecut2", "Reg1", "Cox1", "Cox2")
+```
+
+### veiwing exocrine markers 
+
+```{r}
+dat <- SetIdent(dat, value = "sctype0.5")
+
+DotPlot(dat, features = acinar, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+DotPlot(dat, features = ductal, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+DotPlot(dat, features = metaplastic, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+
+DotPlot(dat, features = c("Birc5", "Spc24", "Cdca3", "Cks2", "2810417H13rik", "Gpx2", "Top2a", "Cdk1", "Ube2c", "Cdca8", "Cenpf", "Tk1", "Ccnb2", "Cenpm", "Mki67", "Prc1", "Pbk", "Lockd", "Smc2", "Cenpw", "Ccna2", "Cdc20", "Racgap1", "Knstrn", "Cenpa", "Tpx2", "Kif23", "Spc25", "Rrm2", "Gins2"),
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+
+DotPlot(dat, features = c("Onecut2", "Tspan8", "Ctse", "Pglyrp1", "Sfn", "Wfdc2", "Dmbt1", "Epcam", "Fxyd3", "Lgals4", "Krt19", "Vsig2", "Gsta4", "Elf3", "Atp1b1", "Cldn2", "Cldn7", "Muc1", "2200002D01Rik", "Gsto1", "Krt7", "Klf5", "Car2", "Prom1", "Gpx2", "Tm4sf4", "Stard10"),
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## tumour 
+
+DotPlot(dat, features = c("Birc5", "Spc24", "Cdca3", "Cks2", "2810417H13Rik", "Gpx2", "Top2a", "Cdk1", "Ube2c", "Cdca8", "Cenpf", "Tk1", "Ccnb2", "Cenpm", "Mki67", "Prc1", "Pbk", "Lockd", "Smc2", "Cenpw", "Ccna2", "Cdc20", "Racgap1", "Knstrn"),
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## tumour 2
+
+DotPlot(dat, features = c("Cldn3", "Tm4sf4", "Ambp", "Tstd1", "Dcdc2a", "Epcam", "Ces1d", "Cldn7", "Atp1b1", "Ttr", "Lurap1l", "Hhex", "Krt19", "Fxyd3", "Sox9", "Spint2", "Cldn10", "Wfdc15b", "Apoc1", "Kifc3", "Alcam", "Pdzk1ip1", "Cadm1", "Sorbs2", "Cxadr", "1700011H14Rik"),
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Ductal
+
+DotPlot(dat, features = c("Pnliprp2", "Klk1", "Gp2", "Cpa2", "Cel", "Spink1", "Try10", "Pla2g1b", "Cuzd1", "Pdia2", "Dmbt1", "Erp27", "Serpini2", "Reg3d", "Tmed6", "Aqp12", "Ctrc", "Amy1", "Fkbp11", "Amy2a5", "Lcmt1", "Gcat", "Amy2a2", "Reg3b", "Hamp2"),
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Acinar 1
+
+DotPlot(dat, features = c("Reg3g", "Spink1", "Reg3b", "Pnliprp2", "Klk1", "Gp2", "Erp27", "Try10", "Reg3a", "Gm2663", "Cckar", "Serpina10", "Bex2", "Cabp2", "Rbpjl", "Hsd17b13", "Ptf1a", "Gm4744", "Klk1b3", "tdTomato", "Pnliprp1", "Reg2"),
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Acinar 2
+
+DimPlot(dat, reduction = "umap", label = T)
+```
+
+```{r}
+dat <- SetIdent(dat, value = "sctype_classification05")
+exCells <- subset(dat, idents = c( "10_Acinar.Cell", 
+                                  "17_Ductal.Cell lowConf", 
+                                  "12_Ductal.Cell", 
+                                  "13_Naive.B.Cell lowConf",
+                                  "25_Mast.Cell lowConf"))
+DimPlot(exCells, reduction = "umap", label = T)
+table(Idents(exCells))
+```
+
+### re-clustering ex cells
+
+```{r}
+exCells <- NormalizeData(exCells)
+exCells <- FindVariableFeatures(exCells)
+exCells <- ScaleData(exCells)
+exCells <- RunPCA(exCells)
+ElbowPlot(exCells, ndims = 40)
+
+exCells <- FindNeighbors(exCells, dims = 1:20, reduction = "pca")
+exCells <- FindClusters(exCells, resolution = c(0.1, 0.3, 0.5))
+exCells <- RunUMAP(exCells, dims = 1:20, reduction = "pca")
+
+umap3 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.1") + NoLegend()
+umap5 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.3") + NoLegend()
+umap7 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.5") + NoLegend()
+umap1 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "sctype_classification1") + NoLegend()
+grid.arrange(umap3, umap5, umap7, umap1,
+             ncol = 2, nrow = 2,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+
+umap5 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.3") + NoLegend()
+umap1 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "orig.ident")
+grid.arrange(umap5, umap1,
+             ncol = 1, nrow = 2,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+```
+
+```{r}
+exCells <- SetIdent(exCells, value = "RNA_snn_res.0.5")
+
+exCells <- SetIdent(exCells, value = "orig.ident")
+exCellsWeek3 <- subset(exCells, idents = c("week3"))
+DimPlot(exCells, reduction = "umap", label = T)
+table(Idents(exCells))
+
+VlnPlot(exCells, features = c("Cpa1")) # Acinar 
+VlnPlot(exCells, features = c("Clu", "Krt19", "Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) # metaplastic 
+VlnPlot(exCells, features = c("Agr2", "Muc5ac", "Tff1")) # neoplastic 
+VlnPlot(exCells, features = c("Apol1", "CK8", "Krt17", "Krt19", "Lamc2", "Lmac2", "ALDH1", "CD44v6", "DCLK1"), group.by = "RNA_snn_res.0.3") # Acinar 
+FeaturePlot(exCells, features = c("Foxa1", "Apol1", "CK8", "Krt17", "Krt19", "Lamc2", "Lmac2", "ALDH1", "CD44v6", "DCLK1")) # Acinar 
+VlnPlot(exCells, features = c("Cldn10", "Ccnd1", "Apoc1", "Ces1d", "Wfdc3"), group.by = "RNA_snn_res.0.3")
+
+DotPlot(exCells, features = acinar, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+DotPlot(exCells, features = ductal, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+DotPlot(exCells, features = metaplastic, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+
+VlnPlot(exCells, features = c("AF5060261", "KRASJAXSEQ"))
+FeaturePlot(exCells, features = c("AF5060261", "KRASJAXSEQ"))
+
+exCells <- RenameIdents(exCells, "3" = "Foxa1", 
+                         "1" = "Foxa1 but less",
+                         "0" = "Acinar Cpa1 1",
+                         "5" = "Acinar Cpa1 2",
+                         "6" = "Acinar Cpa1 3",
+                         "8" = "Acinar Cpa1 4",
+                         "9" = "Acinar Cpa1 5",
+                         "10" = "Acinar Cpa1 6",
+                         "4" = "metaplastic 1",
+                         "2" = "metaplastic 2")
+DimPlot(exCells, reduction = "umap", label = T)
+DimPlot(exCells, reduction = "umap", label = T, group.by = "orig.ident")
+
+```
+
+```{r}
+exCells <- SetIdent(exCells, value = "RNA_snn_res.0.3")
+
+VlnPlot(exCells, features = c("Cpa1")) # Acinar 
+VlnPlot(exCells, features = c("Clu", "Krt19", "Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) # metaplastic 
+VlnPlot(exCells, features = c("Agr2", "Muc5ac", "Tff1")) # neoplastic 
+VlnPlot(exCells, features = c("Foxa1")) # Acinar 
+
+
+DotPlot(exCells, features = acinar, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+DotPlot(exCells, features = ductal, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+DotPlot(exCells, features = metaplastic, cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1))
+
+DotPlot(exCells, features = c("Fkbp5", "Aim2", "Krt20", "Prss22", "Aldh1a3", "Nr1h4", "Scn8a", "Klra4", "Hmga2", "Prap1", "Wnt7b", "Rasgrf1", "Lrmp", "Pcsk6", "Fcgbp", "Atp6v0a4", "Cdkn2a", "Npnt", "Tpm2", "Fam84a"), 
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Tumour 1, clus10
+
+DotPlot(exCells, features = c("Scnn1a", "Fkbp5", "Zbtb16", "Ddx3y", "Lpl", "Sult1d1", "Gm20594", "Slco2a1", "Atp6v0a4", "Eif2s3y", "Arg2", "Ttc36", "Tef", "Vpreb3", "Csnk2a2", "Ptgs1", "Myo15b", "Gm26894", "Mgat3", "Nxpe3", "Lims2"), 
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Tumour 2, clus 17
+
+DotPlot(exCells, features = c("Mmp23", "Muc4", "St8sia3", "Spaca6", "Col16a1", "Ifi203", "Myo15b", "Elmsan1", "Lcp1", "Duox2", "Slco2a1", "Mst1r", "Slpi", "Tnip3", "Plaur", "Onecut2", "Sfn", "Dmbt1", "mt-Nd2"), 
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Tumour 3, clus 19
+
+DotPlot(exCells, features = c("Aqp1", "F5", "Cgref1", "Galnt6", "Shisa2", "Atp2a3", "Chad", "A4gnt", "Tmem213", "Ces1f", "Pga5", "2010007H06Rik", "Pdia5", "Itln1", "Gkn3", "Agr2", "Muc6", "Tff2"), 
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Tumour 3, clus 11
+
+DotPlot(exCells, features = c("Ltc4s", "Avil", "Fyb", "Rgs13", "Alox5ap", "Trpm5", "Sh2d6", "Alox5", "Spib", "Hck", "Hepacam2", "Ly6g6f", "Strip2", "Nrgn", "Bcl2l14"), 
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Tumour 3, clus 25
+
+DotPlot(exCells, features = c("Birc5", "Cdca3", "Spc24", "2810417H13Rik", "Ube2c", "Cdk1", "Cdca8", "Top2a", "Tk1", "Ccnb2", "Mki67", "Pbk", "Cenpf", "Cenpm", "Ccna2"), 
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Metaplastic cycling, paper clus 14
+
+DotPlot(exCells, features = c("Sprr2a3", "Wfdc18", "Dmbt1", "Hspa1a", "Id1", "Reg3b", "Lgals4", "Dnajb1", "Rps18", "Pigr", "Gkn3", "Sftpd", "Wfdc2", "Reg3g", "Gm8730", "8430408G22Rik", "Tm4sf20"), 
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Metaplastic 2, clus 0
+
+DotPlot(exCells, features = c("Gjb4", "Prss22", "Pdgfb", "Fn1", "Cpe", "Tnfrsf11b", "Slc4a11", "Cdkn2a", "Lama3", "Anxa8", "Tnip3", "Map1b", "Gjb3", "Il23a", "Fam84a"), 
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Metaplastic 2, clus 18
+
+DotPlot(exCells, features = c("Mcpt2", "AA467197", "Cwh43", "Prap1", "Tm4sf5", "Mcpt1", "Fam3b", "Gkn2", "Ms4a8a", "Krt20", "Oasl1", "Cyp2c65", "Myo1a", "Avil", "Sult1d1", "Duoxa2", "Duox2"), 
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Metaplastic 2, clus 15
+
+DotPlot(exCells, features = c("Tnip3", "Cdh13", "Sprr2a3", "Anxa8", "Cxcl5", "Cdkn2a", "Ifi203", "Tnfrsf11b", "Pxdc1", "Prss22", "Duoxa2", "Gjb4", "Mmp23", "Tm4sf5", "Areg", "Phlda1", "Sfn", "Cldn4"), 
+        cols = c("red", "green")) + theme(axis.text.x = element_text(angle = 70, hjust = 1)) ## Metaplastic 2, clus 1
+
+
+VlnPlot(exCells, features = c("AF5060261", "KRASJAXSEQ"))
+FeaturePlot(exCells, features = c("AF5060261", "KRASJAXSEQ"))
+
+exCells <- RenameIdents(exCells, "0" = "Ductal / tumour 1", 
+                        "1" = "Acinar 1",
+                        "2" = "Ductal / tumour 2",
+                        "3" = "3",
+                        "4" = "metaplastic cycling 1",
+                        "5" = "metaplastic cycling 2",
+                        "6" = "metaplastic cycling 3",
+                        "7" = "metaplastic cycling 4",
+                        "8" = "Acinar 2",
+                        "9" = "metaplastic cycling 5",
+                        "10" = "metaplastic cycling 6")
+DimPlot(exCells, reduction = "umap", label = T)
+DimPlot(exCells, reduction = "umap", label = T, group.by = "sctype_classification05")
+DimPlot(exCells, reduction = "umap", label = T, group.by = "orig.ident")
+
+
+table(Idents(exCells))
+```
+
