@@ -1,0 +1,448 @@
+---
+title: "Untitled"
+author: "Drew"
+date: "2024-07-21"
+output: html_document
+---
+```{r}
+library(Seurat)
+library(CoGAPS)
+library(msigdbr)
+library(ExperimentHub)
+library(BiocManager)
+library(data.table)
+library(grid)
+library(gridExtra)
+
+
+#BiocManager::install("fgsea")
+
+#devtools::install_github("FertigLab/CoGAPS")
+```
+
+```{r}
+coPat6 <- readRDS("FinaleProcessedData/exCoGAPSnew_N4.rds")
+coPat8 <- readRDS("FinaleProcessedData/exCoGAPSnew_N6.rds")
+coPat10 <- readRDS("FinaleProcessedData/exCoGAPSnew_N8.rds")
+
+cells6 <- readRDS("FinaleProcessedData/exCells.rds")
+cells8 <- readRDS("FinaleProcessedData/exCells.rds")
+cells10 <- readRDS("FinaleProcessedData/exCells.rds")
+```
+
+
+```{r}
+rownames(coPat6@sampleFactors) <- gsub("\\.", "-", rownames(coPat6@sampleFactors))
+patterns_in_order6 <-t(coPat6@sampleFactors[colnames(cells6),])
+
+all.equal(rownames(coPat6@sampleFactors), colnames(cells6))
+
+rownames(coPat8@sampleFactors) <- gsub("\\.", "-", rownames(coPat8@sampleFactors))
+patterns_in_order8 <-t(coPat8@sampleFactors[colnames(cells8),])
+
+all.equal(rownames(coPat8@sampleFactors), colnames(cells8))
+
+rownames(coPat10@sampleFactors) <- gsub("\\.", "-", rownames(coPat10@sampleFactors))
+patterns_in_order10 <-t(coPat10@sampleFactors[colnames(cells10),])
+
+all.equal(rownames(coPat10@sampleFactors), colnames(cells10))
+
+```
+
+```{r}
+cells6[["CoGAPS6"]] <- CreateAssayObject(counts = patterns_in_order6)
+cells8[["CoGAPS8"]] <- CreateAssayObject(counts = patterns_in_order8)
+cells10[["CoGAPS10"]] <- CreateAssayObject(counts = patterns_in_order10)
+```
+
+```{r}
+DefaultAssay(cells6) <- "CoGAPS6"
+pattern_names = rownames(cells6@assays$CoGAPS6)
+
+library(viridis)
+color_palette <- viridis(n=10)
+
+p1 <- FeaturePlot(cells6, "Pattern-1", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p2 <- FeaturePlot(cells6, "Pattern-2", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p3 <- FeaturePlot(cells6, "Pattern-3", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p4 <- FeaturePlot(cells6, "Pattern-4", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+grid.arrange(p1, p2, p3, p4,
+             ncol = 2, nrow = 2,
+             top = textGrob("Sc-Type stuff", gp=gpar(fontsize=20)))
+
+#DotPlot(cells6, features = pattern_names)
+
+```
+
+```{r}
+DefaultAssay(cells8) <- "CoGAPS8"
+pattern_names = rownames(cells8@assays$CoGAPS8)
+
+p1 <- FeaturePlot(cells8, "Pattern-1", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p2 <- FeaturePlot(cells8, "Pattern-2", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p3 <- FeaturePlot(cells8, "Pattern-3", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p4 <- FeaturePlot(cells8, "Pattern-4", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p5 <- FeaturePlot(cells8, "Pattern-5", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p6 <- FeaturePlot(cells8, "Pattern-6", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+grid.arrange(p1, p2, p3, p4, p5, p6,
+             ncol = 3, nrow = 2,
+             top = textGrob("CoGAPS patterns", gp=gpar(fontsize=20)))
+
+#DotPlot(cells8, features = pattern_names)
+```
+
+
+```{r}
+DefaultAssay(cells10) <- "CoGAPS10"
+pattern_names = rownames(cells10@assays$CoGAPS10)
+
+coPat10@featureLoadings
+
+p1 <- FeaturePlot(cells10, "Pattern-1", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p2 <- FeaturePlot(cells10, "Pattern-2", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p3 <- FeaturePlot(cells10, "Pattern-3", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p4 <- FeaturePlot(cells10, "Pattern-4", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p5 <- FeaturePlot(cells10, "Pattern-5", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p6 <- FeaturePlot(cells10, "Pattern-6", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p7 <- FeaturePlot(cells10, "Pattern-7", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p8 <- FeaturePlot(cells10, "Pattern-8", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, p8,
+             ncol = 4, nrow = 2,
+             top = textGrob("Sc-Type stuff", gp=gpar(fontsize=20)))
+
+#DotPlot(cells8, features = pattern_names)
+```
+
+
+```{r}
+
+library(data.table)
+
+file_path <- "GeneSets/m5.mpt.v2023.2.Mm.symbols.gmt"
+
+read_gmt <- function(file_path) {
+  lines <- fread(file_path, sep = "\n", header = FALSE)$V1
+  gene_sets <- lapply(lines, function(line) {
+    parts <- strsplit(line, "\t")[[1]]
+    list(gs_name = parts[1], genes = parts[-c(1, 2)])
+  })
+  names(gene_sets) <- sapply(gene_sets, function(x) x$gs_name)
+  gene_sets <- lapply(gene_sets, function(x) x$genes)
+  return(gene_sets)
+}
+
+cancerSet <- read_gmt("GeneSets/m5.mpt.v2023.2.Mm.symbols.gmt")
+GOBP <- read_gmt("GeneSets/m5.go.bp.v2023.2.Mm.symbols.gmt")
+GOMF <- read_gmt("GeneSets/m5.go.mf.v2023.2.Mm.symbols.gmt")
+GOCC <- read_gmt("GeneSets/m5.go.cc.v2023.2.Mm.symbols.gmt")
+Reac <- read_gmt("GeneSets/m2.cp.reactome.v2023.2.Mm.symbols.gmt")
+Hall <- read_gmt("GeneSets/mh.all.v2023.2.Mm.symbols.gmt")
+
+```
+
+```{r}
+kegg_gene_sets <- msigdbr(species = "Mus musculus", category = "C2", subcategory = "KEGG")
+
+convert_to_list <- function(gene_sets_df) {
+  gene_sets_df$gs_name <- as.character(gene_sets_df$gs_name)
+  gene_sets_df$gene_symbol <- as.character(gene_sets_df$gene_symbol)
+  
+  # Split gene symbols by gene set names
+  split_gene_sets <- split(gene_sets_df$gene_symbol, gene_sets_df$gs_name)
+  
+  # Convert to list format
+  gene_set_list <- lapply(names(split_gene_sets), function(name) {
+    split_gene_sets[[name]]
+  })
+  
+  names(gene_set_list) <- names(split_gene_sets)
+  return(gene_set_list)
+}
+
+# Apply the conversion
+kegg <- convert_to_list(kegg_gene_sets)
+```
+
+
+```{r}
+
+cancerHall6 <- getPatternGeneSet(
+  coPat6, gene.sets = cancerSet , method = "overrepresentation"
+)
+
+plotPatternGeneSet(patterngeneset = cancerHall6, whichpattern = 1, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall6, whichpattern = 2, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall6, whichpattern = 3, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall6, whichpattern = 4, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall6, whichpattern = 5, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall6, whichpattern = 6, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall6, whichpattern = 7, padj_threshold = 0.05)
+
+cancerHall8 <- getPatternGeneSet(
+  coPat8, gene.sets = cancerSet , method = "overrepresentation"
+)
+
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 1, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 2, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 3, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 4, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 5, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 6, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 7, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 8, padj_threshold = 0.05)
+
+test <- GOBPHall6[[7]]
+
+cancerHall10 <- getPatternGeneSet(
+  coPat10, gene.sets = msigdb_gene_sets, method = "overrepresentation"
+)
+
+plotPatternGeneSet(patterngeneset = cancerHall10, whichpattern = 1, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall10, whichpattern = 2, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall10, whichpattern = 3, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall10, whichpattern = 4, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall10, whichpattern = 5, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall10, whichpattern = 6, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall10, whichpattern = 7, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall10, whichpattern = 8, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall10, whichpattern = 9, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall10, whichpattern = 10, padj_threshold = 0.05)
+
+
+```
+
+
+
+```{r}
+
+GOBPHall6 <- getPatternGeneSet(
+  coPat6, gene.sets = GOBP, method = "overrepresentation"
+)
+
+ggplot(GOBPHall6[[1]], aes(y = neg.log.padj, x = gene.set)) + 
+  geom_col(aes(fill = "k/K")) + 
+    coord_flip() +
+    theme_minimal() +
+    labs(x = NULL, y = "-10*log10(p-adj)") + 
+    geom_text(aes(x = gene.set, y = 0.05, label = gene.set), hjust = 0) +
+    scale_fill_continuous(low = "#80C7EF",high = "#E69F00") +
+    ggtitle(paste0(" gene sets in Pattern_")) +
+    geom_hline(yintercept=neg.log.hline, linetype="dotted") +
+    theme(axis.text.y = element_blank())
+
+plotPatternGeneSet(patterngeneset = GOBPHall6, whichpattern = 1, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = GOBPHall6, whichpattern = 2, padj_threshold = 0.0001)
+plotPatternGeneSet(patterngeneset = GOBPHall6, whichpattern = 3, padj_threshold = 0.000008)
+plotPatternGeneSet(patterngeneset = GOBPHall6, whichpattern = 4, padj_threshold = 0.01)
+plotPatternGeneSet(patterngeneset = GOBPHall6, whichpattern = 5, padj_threshold = 0.000000000015)
+plotPatternGeneSet(patterngeneset = GOBPHall6, whichpattern = 6, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = GOBPHall6, whichpattern = 7, padj_threshold = 0.5)
+
+cancerHall8 <- getPatternGeneSet(
+  coPat8, gene.sets = msigdb_gene_sets, method = "overrepresentation"
+)
+
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 1, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 2, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 3, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 4, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 5, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 6, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 7, padj_threshold = 0.05)
+plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = 8, padj_threshold = 0.05)
+
+cancerHall8[[8]]
+
+
+```
+
+```{r}
+
+GOMFHall6 <- getPatternGeneSet(
+  coPat6, gene.sets = GOMF, method = "overrepresentation"
+)
+
+for (i in 1:7) {
+  plot <- plotPatternGeneSet(patterngeneset = GOMFHall6, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+GOMFHall8  <- getPatternGeneSet(
+  coPat8, gene.sets = GOMF, method = "overrepresentation"
+)
+
+for (i in 1:8) {
+  plot <- plotPatternGeneSet(patterngeneset = GOMFHall8, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+cancerHall8[[8]]
+
+
+```
+
+
+```{r}
+
+GOCCHall6 <- getPatternGeneSet(
+  coPat6, gene.sets = GOCC, method = "overrepresentation", threshold = "all"
+)
+
+for (i in 1:7) {
+  plot <- plotPatternGeneSet(patterngeneset = GOCCHall6, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+GOMFHall8  <- getPatternGeneSet(
+  coPat8, gene.sets = GOMF, method = "overrepresentation"
+)
+
+for (i in 1:8) {
+  plot <- plotPatternGeneSet(patterngeneset = GOMFHall8, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+cancerHall8[[8]]
+
+
+```
+
+```{r}
+
+ReacHall6 <- getPatternGeneSet(
+  coPat6, gene.sets = Reac, method = "overrepresentation", threshold = "cut"
+)
+
+for (i in 1:4) {
+  plot <- plotPatternGeneSet(patterngeneset = ReacHall6, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+GOMFHall8  <- getPatternGeneSet(
+  coPat8, gene.sets = GOMF, method = "overrepresentation"
+)
+
+for (i in 1:8) {
+  plot <- plotPatternGeneSet(patterngeneset = GOMFHall8, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+cancerHall8[[8]]
+
+
+```
+
+```{r}
+
+Hall6 <- getPatternGeneSet(
+  coPat6, gene.sets = Hall, method = "overrepresentation", threshold = "cut"
+)
+
+for (i in 1:4) {
+  plot <- plotPatternGeneSet(patterngeneset = Hall6, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+Hall8  <- getPatternGeneSet(
+  coPat8, gene.sets = Hall, method = "enrichment", threshold = "cut"
+)
+
+for (i in 1:6) {
+  plot <- plotPatternGeneSet(patterngeneset = Hall8, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+cancerHall8[[8]]
+
+DimPlot(cells6, reduction = "umap", label = T, group.by = "cellNames")
+DimPlot(cells6, reduction = "umap", group.by = "orig.ident")
+```
+
+```{r}
+
+KeggHall6 <- getPatternGeneSet(
+  coPat6, gene.sets = kegg, method = "overrepresentation", threshold = "all"
+)
+
+for (i in 1:4) {
+  plot <- plotPatternGeneSet(patterngeneset = KeggHall6, whichpattern = i, padj_threshold = 0.1)
+  print(plot)
+}
+
+KeggHall8  <- getPatternGeneSet(
+  coPat8, gene.sets = kegg, method = "enrichment", threshold = "cut"
+)
+
+for (i in 1:6) {
+  plot <- plotPatternGeneSet(patterngeneset = KeggHall8, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+cancerHall8[[8]]
+
+
+```
+
+```{r}
+Hall8  <- getPatternGeneSet(
+  coPat10, gene.sets = Hall, method = "enrichment", threshold = "cut"
+)
+
+for (i in 1:8) {
+  plot <- plotPatternGeneSet(patterngeneset = Hall8, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+KeggHall8  <- getPatternGeneSet(
+  coPat10, gene.sets = kegg, method = "enrichment", threshold = "cut"
+)
+
+for (i in 1:8) {
+  plot <- plotPatternGeneSet(patterngeneset = KeggHall8, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+cancerHall8 <- getPatternGeneSet(
+  coPat10, gene.sets = cancerSet , method = "enrichment", threshold = "cut"
+)
+
+for (i in 1:8) {
+  plot <- plotPatternGeneSet(patterngeneset = cancerHall8, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+
+ReacHall8 <- getPatternGeneSet(
+  coPat10, gene.sets = Reac, method = "enrichment", threshold = "cut"
+)
+
+for (i in 1:8) {
+  plot <- plotPatternGeneSet(patterngeneset = ReacHall8, whichpattern = i, padj_threshold = 0.05)
+  print(plot)
+}
+```
+
+```{r}
+
+plotPatternGeneSet(patterngeneset = Hall8, whichpattern = 5, padj_threshold = 0.02)
+plotPatternGeneSet(patterngeneset = Hall8, whichpattern = 1, padj_threshold = 0.002)
+
+
+plotPatternGeneSet(patterngeneset = KeggHall8, whichpattern = 2, padj_threshold = 0.05)
+print(plot)
+
+
+plotPatternGeneSet(patterngeneset = ReacHall8, whichpattern = 1, padj_threshold = 0.000005)
+plotPatternGeneSet(patterngeneset = ReacHall8, whichpattern = 4, padj_threshold = 0.05)
+
+```
+
+```{r}
+p1 <- FeaturePlot(cells8, "Pattern-1", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p2 <- FeaturePlot(cells8, "Pattern-2", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p3 <- FeaturePlot(cells8, "Pattern-3", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p4 <- FeaturePlot(cells8, "Pattern-4", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p5 <- FeaturePlot(cells8, "Pattern-5", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+p6 <- FeaturePlot(cells8, "Pattern-6", cols=c("red", "green"), reduction = "umap", pt.size = 1.5)
+```
+

@@ -1,0 +1,243 @@
+---
+title: "3_ExCells"
+author: "Drew"
+date: "2024-07-28"
+output: html_document
+---
+
+# cola1a - fibroblasts 
+# Rgs5 - pericytes
+# Ptprc - immun 
+# Pecam1 - endothelial 
+# Resp18 - neuroendocrine 
+
+
+####### ex subset 
+
+```{r}
+
+exCells <- readRDS("FinaleProcessedData/exCellsRaw.rds")
+
+```
+
+```{r}
+exCells <- NormalizeData(exCells)
+exCells <- FindVariableFeatures(exCells)
+exCells <- ScaleData(exCells)
+exCells <- RunPCA(exCells)
+ElbowPlot(exCells, ndims = 40)
+
+exCells <- FindNeighbors(exCells, dims = 1:20, reduction = "pca")
+exCells <- FindClusters(exCells, resolution = c(0.1, 0.2, 0.3, 0.4, 0.5))
+exCells <- RunUMAP(exCells, dims = 1:20, reduction = "pca")
+
+umap3 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.1") + NoLegend()
+umap5 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.2") + NoLegend()
+umap7 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.3") + NoLegend()
+umap8 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.4") + NoLegend()
+umap9 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.5") + NoLegend()
+umap1 <- DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "sctype0.5") + NoLegend()
+grid.arrange(umap3, umap5, umap7, umap1, umap8, umap9,
+             ncol = 3, nrow = 2,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+
+table(Idents(exCells))
+
+umap5 <- DimPlot(exCells, reduction = 'umap' ,label = T, pt.size = 1.5) + NoLegend()
+umap1 <- DimPlot(exCells, reduction = 'umap' , group.by = "orig.ident", pt.size = 1.5)
+grid.arrange(umap5, umap1,
+             ncol = 2, nrow = 1,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+
+umap5 <- FeaturePlot(exCells, features = c("Clu"))
+umap1 <- DimPlot(exCells, reduction = 'umap' , group.by = "DF.classifications", pt.size = 1.5)
+grid.arrange(umap5, umap1,
+             ncol = 2, nrow = 1,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+```
+
+### metaplastic 
+
+```{r}
+FeaturePlot(exCells, features = c("Vav1", "Gnat3", "Dclk1")) #  metaplastic tuft
+FeaturePlot(exCells, features = c("Cdk1", "Plk1", "Aurka")) #  proliferative ductal 
+FeaturePlot(exCells, features = c("Clu", "Krt19", "Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) 
+FeaturePlot(exCells, features = c("Clu", "Krt19")) #  metaplastic
+FeaturePlot(exCells, features = c("Agr2", "Muc5ac", "Tff1", "Tff2")) 
+
+FeaturePlot(exCells, features = c("Clu", "Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) #  metaplastic
+VlnPlot(exCells, features = c("Clu", "Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) #  metaplastic 
+
+FeaturePlot(exCells, features = c("Id3", "Runx1", "Onecut2", "Foxq1")) 
+```
+
+## cancer - mouse
+
+```{r}
+FeaturePlot(exCells, features = c("Aldh1a1", "Aldh1", "Cd44", "Dclk1")) #  cancer stem cell
+FeaturePlot(exCells, features = c("Krt17", "Epcam", "Lamc2", "Foxa1")) #  cancer
+VlnPlot(exCells, features = c("Krt17", "Epcam", "Lamc2", "Foxa1")) #  cancer
+```
+
+## cancer - human 
+
+```{r}
+FeaturePlot(exCells, features = c("Aldh1a1", "Cd44", "Cd9", "Dclk1", "Notch2", "Paf1", "Pak4", "Sox9")) #  cancer stem 
+FeaturePlot(exCells, features = c("Egfr", "Epcam", "Gpc1", "Kras", "Muc1", "Myc", "Wnt2")) #  cancer
+VlnPlot(exCells, features = c("Egfr", "Epcam", "Gpc1", "Kras", "Muc1", "Myc", "Wnt2")) #  cancer
+```
+
+```{r}
+DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.5", pt.size = 1.5) + NoLegend()
+DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "sctype1") + NoLegend()
+DimPlot(exCells, reduction = 'umap' ,label = T, group.by = "DF.classifications", pt.size = 1.5) + NoLegend()
+VlnPlot(exCells, features = c("AF5060261"), group.by = "RNA_snn_res.0.5", pt.size = 1.5)
+FeaturePlot(exCells, features = c("AF5060261"), pt.size = 1.5)
+
+umap5 <- FeaturePlot(exCells, features = c("Ptprc"))
+umap1 <- DimPlot(exCells, reduction = 'umap' , group.by = "DF.classifications", pt.size = 1.5)
+grid.arrange(umap5, umap1,
+             ncol = 2, nrow = 1,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+
+FeaturePlot(exCells, features = c("S100a6", "Nes", "Cdkn2a"))
+
+FeaturePlot(exCells, features = c("Zg16", "Cpa1", "Krt19", "Sox9")) # acinar 
+
+FeaturePlot(exCells, features = c("Col1a1", "Rgs5", "Ptprc", "Pecam1"))
+
+
+FeaturePlot(exCells, features = c("Zg16", "Cpa1")) # acinar 
+FeaturePlot(exCells, features = c("Krt19", "Krt18", "Sox9", "Clu")) # ductal
+FeaturePlot(exCells, features = c("Nes", "Cd44", "Vim", "Cdkn2a")) # Nes progenitor
+FeaturePlot(exCells, features = c("Pou2f3", "Dclk1", "Trpm5")) # Tuft
+FeaturePlot(exCells, features = c("Chga", "Chgb", "Neurod1", "Syp", "Ppy", "Gcg", "Ins", "Sst")) # neuroendocrine like 
+FeaturePlot(exCells, features = c("Muc1", "Muc6", "Gkn3", "Muc5ac", "Tff2", "Tff1", "Agr2")) # Gastric
+```
+
+
+```{r}
+exCells <- RenameIdents(exCells, "0" = "Acinar",
+                        "1" = "Acinar / ADM", 
+                        "2" = "Metaplastic 1",
+                        "3" = "Metaplastic 2",
+                        "4" = "Metaplastic / ADM")
+DimPlot(exCells, reduction = "umap", label = T)
+
+exCells@meta.data$cellLabs <- Idents(exCells)
+
+saveRDS(exCells, "FinaleProcessedData/exCells.rds")
+```
+
+```{r}
+exCellsVarible <- FindVariableFeatures(exCells, selection.method = "vst", nfeatures = 15000)
+variable_genes <- VariableFeatures(exCellsVarible)
+
+CountMatEx <- as.matrix(GetAssayData(object = exCells, slot = "data"))
+CountMatEx <- CountMatEx[variable_genes ,]
+test <- CountMatEx[,1:2]
+
+sparsity_ratio <- sum(CountMatEx == 0) / length(CountMatEx)
+
+write.table(CountMatEx, "FinaleProcessedData/exCellsCountMat.txt", sep = "\t")
+```
+
+```{r}
+
+exCells2 <- subset(exCells, idents = c("0", 
+                        "1",
+                        "4",
+                        "5"))
+
+exCells2 <- FindVariableFeatures(exCells2)
+exCells2 <- ScaleData(exCells2)
+exCells2 <- RunPCA(exCells2)
+ElbowPlot(exCells2, ndims = 40)
+
+exCells2 <- FindNeighbors(exCells2, dims = 1:20, reduction = "pca")
+exCells2 <- FindClusters(exCells2, resolution = c(0.3, 0.4, 0.5))
+exCells2 <- RunUMAP(exCells2, dims = 1:20, reduction = "pca")
+
+umap3 <- DimPlot(exCells2, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.3") + NoLegend()
+umap5 <- DimPlot(exCells2, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.4") + NoLegend()
+umap7 <- DimPlot(exCells2, reduction = 'umap' ,label = T, group.by = "RNA_snn_res.0.5", pt.size = 1.5) + NoLegend()
+umap1 <- DimPlot(exCells2, reduction = 'umap' ,label = T, group.by = "sctype1") + NoLegend()
+grid.arrange(umap3, umap5, umap7, umap1,
+             ncol = 2, nrow = 2,
+             top = textGrob("Ex cells", gp=gpar(fontsize=20)))
+
+umap5 <- DimPlot(exCells2, reduction = 'umap' ,label = T, pt.size = 1.5) + NoLegend()
+umap1 <- DimPlot(exCells2, reduction = 'umap' , group.by = "orig.ident", pt.size = 1.5)
+grid.arrange(umap5, umap1,
+             ncol = 2, nrow = 1,
+             top = textGrob("Metaplastic cells", gp=gpar(fontsize=20)))
+```
+
+
+# acinar + ductal
+
+```{r}
+FeaturePlot(exCells2, features = c("Cpa1", "Krt18", "Krt19", "Clu"))
+```
+
+### metaplastic 
+
+```{r}
+FeaturePlot(exCells2, features = c("Vav1", "Gnat3", "Dclk1")) #  metaplastic tuft
+FeaturePlot(exCells2, features = c("Cdk1", "Plk1", "Aurka")) #  proliferative ductal 
+FeaturePlot(exCells2, features = c("Clu", "Krt19", "Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) #  metaplastic tuft
+
+FeaturePlot(exCells2, features = c("Clu", "Krt19")) #  metaplastic tuft
+FeaturePlot(exCells2, features = c("Agr2", "Muc5ac", "Tff1", "Tff2")) #  metaplastic tuft
+
+FeaturePlot(exCells2, features = c("Clu", "Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) #  metaplastic tuft
+VlnPlot(exCells, features = c("Clu", "Id1", "Id3", "Runx1", "Onecut2", "Foxq1")) #  metaplastic tuft
+```
+
+## cancer - mouse
+
+```{r}
+FeaturePlot(exCells, features = c("Aldh1a1", "Aldh1", "Cd44", "Dclk1")) #  cancer stem cell
+FeaturePlot(exCells2, features = c("Krt17", "Epcam", "Lamc2", "Foxa1")) #  cancer
+VlnPlot(exCells2, features = c("Krt17", "Epcam", "Lamc2", "Foxa1")) #  cancer
+```
+
+## cancer - human 
+
+```{r}
+FeaturePlot(exCells, features = c("Aldh1a1", "Cd44", "Cd9", "Dclk1", "Notch2", "Paf1", "Pak4", "Sox9")) #  cancer stem 
+FeaturePlot(exCells, features = c("Egfr", "Epcam", "Gpc1", "Kras", "Muc1", "Myc", "Wnt2")) #  cancer
+VlnPlot(exCells, features = c("Egfr", "Epcam", "Gpc1", "Kras", "Muc1", "Myc", "Wnt2")) #  cancer
+```
+
+### markers from epigenetic paper doing cell-cell commuication 
+
+```{r}
+VlnPlot(exCells2, features = c("AF5060261"))
+FeaturePlot(exCells2, features = c("AF5060261")) # clus 1 no KRAS but looks like ADM 
+
+FeaturePlot(exCells2, features = c("S100a6", "Nes", "Cdkn2a"))
+FeaturePlot(exCells2, features = c("Il18rl", "Nes", "Cd44"))
+FeaturePlot(exCells2, features = c("Ptf1a", "Nes", "Neurod1", "Tff2"))
+
+FeaturePlot(exCells2, features = c("Zg16", "Cpa1")) # acinar 
+FeaturePlot(exCells2, features = c("Krt19", "Krt18", "Sox9", "Clu")) # ductal
+FeaturePlot(exCells2, features = c("Nes", "Cd44", "Vim", "Cdkn2a")) # Nes progenitor
+FeaturePlot(exCells2, features = c("Pou2f3", "Dclk1", "Trpm5")) # Tuft
+FeaturePlot(exCells2, features = c("Chga", "Chgb", "Neurod1", "Syp", "Ppy", "Gcg", "Ins", "Sst")) # neuroendocrine like 
+FeaturePlot(exCells2, features = c("Muc1", "Muc6", "Gkn3", "Muc5ac", "Tff2", "Tff1", "Agr2")) # Gastric
+```
+
+```{r}
+exCells2 <- RenameIdents(exCells2, "0" = "Metaplastic mutKras 1",
+                        "1" = "Metaplastic wtKras",
+                        "2" = "Metaplastic mutKras 2",
+                        "3" = "wt",
+                        "4" = "wt",
+                        "5" = "Early metaplastic",
+                        "6" = "ADM wtKras")
+```
+
+```{r}
+saveRDS(exCells2, "GoodProcessedData/metaplasGood.rds")
+```
