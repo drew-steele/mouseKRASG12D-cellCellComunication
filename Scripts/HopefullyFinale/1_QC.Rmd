@@ -1,0 +1,289 @@
+---
+title: "1_QC"
+author: "Drew"
+date: "2024-07-27"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+library(patchwork)
+library(dplyr)
+library(gridExtra)
+library(grid)
+
+library(Matrix)
+library(fields)
+library(KernSmooth)
+library(ROCR)
+library(parallel)
+library(DoubletFinder)
+
+library(harmony)
+library(cowplot)
+```
+
+
+### Reading in the data 
+
+```{r}
+
+datDir <- "~/Uni/research project/mouseKRASG12D-cellCellComunication/Data/RFPonly"
+list.files(datDir)
+
+rawDataTu <- Read10X(data.dir = file.path(datDir, "tumour"))
+rawData9 <- Read10X(data.dir = file.path(datDir, "week9"))
+rawData6 <- Read10X(data.dir = file.path(datDir, "week6"))
+rawData3 <- Read10X(data.dir = file.path(datDir, "week3"))
+
+datTu <- CreateSeuratObject(counts = rawDataTu, project = "tumour", min.cells = 3, min.features = 200)
+dat9 <- CreateSeuratObject(counts = rawData9, project = "week9", min.cells = 3, min.features = 200)
+dat6 <- CreateSeuratObject(counts = rawData6, project = "week6", min.cells = 3, min.features = 200)
+dat3 <- CreateSeuratObject(counts = rawData3, project = "week3", min.cells = 3, min.features = 200)
+
+#datList <- list(datTu, dat9, dat6, dat3)
+datList <- list(tumour = datTu, week9 = dat9, week6 = dat6, week3 = dat3)
+
+rm(datTu, dat9, dat6, dat3, rawData3, rawData6, rawData9, rawDataTu)
+
+```
+
+### main QC
+
+```{r}
+
+for (i in names(datList)) {
+  
+  datList[[i]][["qc.mito"]] <- PercentageFeatureSet(datList[[i]], pattern = "^mt-")
+  
+  #pdf(file.path("figures/QC", paste0("ViolinPlot_", i, ".pdf")))
+  print(VlnPlot(datList[[i]], features = c("nFeature_RNA", "nCount_RNA", "qc.mito"), ncol = 3))
+  #dev.off()
+  
+  plot1 <- FeatureScatter(datList[[i]], feature1 = "nCount_RNA", feature2 = "qc.mito")
+  plot2 <- FeatureScatter(datList[[i]], feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+  
+  #pdf(file.path("figures/QC", paste0("FeatureScatter_", i, ".pdf")))
+  print(plot1 + plot2)
+  #dev.off()
+  
+  datList[[i]] <- subset(datList[[i]] , subset = nFeature_RNA > 200 & nFeature_RNA < 6000 & nCount_RNA > 1000
+                               & qc.mito < 20)
+  
+  cat(i, "\n")
+}
+```
+
+## Doublet finder
+
+```{r}
+set.seed(101)
+
+sweepResList <- list()
+sweepSumList <- list()
+bcmvnList <- list()
+homotypList <- list()
+nExp_poi.adj <- list()
+datListFilt <- list()
+datListDoublet <- list()
+
+for (i in names(datList)) {
+  
+  datList[[i]] <- NormalizeData(datList[[i]])
+  datList[[i]] <- FindVariableFeatures(datList[[i]], selection.method = "vst", nfeatures = 2000)
+  datList[[i]] <- ScaleData(datList[[i]])
+  datList[[i]] <- RunPCA(datList[[i]])
+  datList[[i]] <- RunUMAP(datList[[i]], dims = 1:20, reduction = "pca")
+  datList[[i]] <- FindNeighbors(datList[[i]], dims = 1:20, reduction = "pca")
+  datList[[i]] <- FindClusters(datList[[i]], resolution = c(0.1))
+  
+  sweepResList[[i]] <- paramSweep(datList[[i]], PCs = 1:20, sct = FALSE)
+  sweepSumList[[i]] <- summarizeSweep(sweepResList[[i]], GT = FALSE)
+  bcmvnList[[i]] <- find.pK(sweepSumList[[i]])
+  homotypList[[i]] <- modelHomotypic(datList[[i]]@meta.data$seurat_clusters)
+  nExp_poi <- round(0.061*nrow(datList[[i]]@meta.data))
+  nExp_poi.adj[[i]] <- round(nExp_poi*(1-homotypList[[i]]))
+  max_pk_value <- as.numeric(as.character(bcmvnList[[i]]$pK[which.max(bcmvnList[[i]]$BCmetric)]))
+  datList[[i]] <- doubletFinder(datList[[i]], PCs = 1:20, pN = 0.25, pK = max_pk_value,
+                              nExp = nExp_poi.adj[[i]], reuse.pANN = FALSE, sct = FALSE)
+  seurat_colnames <- colnames(datList[[i]]@meta.data)
+  seurat_colnames <- lapply(seurat_colnames, function(x) sub("_0.25.*", "", x))
+  colnames(datList[[i]]@meta.data) <- seurat_colnames
+  table(datList[[i]]@meta.data$DF.classifications)
+  datListFilt[[i]] <- subset(datList[[i]], subset = DF.classifications == 'Singlet')
+  datListDoublet[[i]] <- subset(datList[[i]], subset = DF.classifications == 'Doublet')
+  
+  #cat(paste("QC for time point", i))
+  print(FeaturePlot(datList[[i]], features = c("Cpa1", "Zg16", "Krt19", "Sox9")))
+  print(FeaturePlot(datList[[i]], features = "pANN"))
+}
+
+```
+
+## Joining layers
+
+```{r}
+datMerge <- merge(x = datList[["tumour"]], y = list(datList[["week9"]], datList[["week6"]], datList[["week3"]]), project = 'KrasMouse')
+dat <- JoinLayers(datMerge)
+```
+
+### Clustering
+
+```{r}
+set.seed(101)
+
+head(dat@meta.data)
+
+dat <- NormalizeData(dat)
+dat <- FindVariableFeatures(dat, selection.method = "vst", nfeatures = 2000)
+dat <- ScaleData(dat)
+dat <- RunPCA(dat)
+ElbowPlot(dat, ndims = 40)
+
+dat <- FindNeighbors(dat, dims = 1:20, reduction = "pca")
+dat <- FindClusters(dat, resolution = c(0.1, 0.3, 0.5, 0.7, 1))
+
+dat <- RunUMAP(dat, dims = 1:20, reduction = "pca")
+
+umap1 <- DimPlot(dat, reduction = "pca", group.by = "orig.ident", label = T) + NoLegend()
+umap2 <- DimPlot(dat, reduction = "umap", group.by = "orig.ident", label = T) + NoLegend()
+grid.arrange(umap1, umap2, ncol = 2, nrow = 1,
+             top = textGrob("Batch Effects Investigation", gp=gpar(fontsize=20)))
+
+DimPlot(dat, reduction = 'umap', group.by = "RNA_snn_res.0.5",label = T) + NoLegend()
+
+FeaturePlot(dat, features = c("Cpa1", "Zg16", "Krt19", "Sox9"))
+FeaturePlot(dat, features = c("Col1a1", "Rgs5", "Ptprc", "Pecam1"))
+```
+
+### plots
+
+```{r}
+
+umapTime <- DimPlot(dat, reduction = 'umap', group.by = 'orig.ident') + NoLegend()
+umap01 <- DimPlot(dat, reduction = 'umap', group.by = "RNA_snn_res.0.1",label = T) + NoLegend()
+umap03 <- DimPlot(dat, reduction = 'umap', group.by = "RNA_snn_res.0.3",label = T) + NoLegend()
+umap05 <- DimPlot(dat, reduction = 'umap', group.by = "RNA_snn_res.0.5",label = T) + NoLegend()
+umap07 <- DimPlot(dat, reduction = 'umap', group.by = "RNA_snn_res.0.7",label = T) + NoLegend()
+umap1 <- DimPlot(dat, reduction = 'umap', group.by = "RNA_snn_res.1",label = T) + NoLegend()
+grid.arrange(umap01, umap03, umap05, umap07, umap1, umapTime, ncol = 3, nrow = 2,
+             top = textGrob("Clustering resoloutions", gp=gpar(fontsize=20)))
+
+
+umap1 <- DimPlot(dat, reduction = "umap", group.by = "DF.classifications", label = T) + NoLegend()
+umap2 <- DimPlot(dat, reduction = 'umap', group.by = "RNA_snn_res.0.5",label = T) + NoLegend()
+grid.arrange(umap1, umap2, ncol = 2, nrow = 1,
+             top = textGrob("Batch Effects Investigation", gp=gpar(fontsize=20)))
+```
+
+#### quality check of clusters
+
+```{r}
+
+VlnPlot(dat, features = "nFeature_RNA", group.by = "RNA_snn_res.0.5") + NoLegend()
+VlnPlot(dat, features = "nCount_RNA", group.by = "RNA_snn_res.0.5") + NoLegend()
+VlnPlot(dat, features = "qc.mito", group.by = "RNA_snn_res.1") + NoLegend()
+
+```
+
+####### Harmony intergration
+
+### pre-processing
+
+```{r}
+set.seed(101)
+
+datMerge <- NormalizeData(datMerge)
+datMerge <- FindVariableFeatures(datMerge, selection.method = "vst", nfeatures = 2000)
+datMerge <- ScaleData(datMerge)
+datMerge <- RunPCA(datMerge)
+ElbowPlot(datMerge, ndims = 40)
+
+datMerge <- FindNeighbors(datMerge, dims = 1:20, reduction = "pca")
+datMerge <- FindClusters(datMerge, resolution = c(0.1, 0.3, 0.5, 0.7, 1))
+
+datMerge <- RunUMAP(datMerge, dims = 1:20, reduction = "pca")
+
+DimPlot(datMerge, reduction = "umap", group.by = "RNA_snn_res.0.5", label = T)
+
+```
+
+#### intergration
+
+```{r}
+set.seed(101)
+
+harmonyDat <- datMerge %>%
+  RunHarmony(group.by.vars = 'orig.ident', plot_convergence = T)
+harmonyDatEmbed <- Embeddings(harmonyDat, "harmony")
+harmonyDatEmbed[1:10,1:10]
+harmonyDat <- harmonyDat %>%
+  RunUMAP(reduction = 'harmony', dims = 1:20) %>%
+  FindNeighbors(reduction = "harmony", dims = 1:20) %>%
+  FindClusters(resolution = c(0.1,0.3,0.5, 0.7, 1))
+
+harmonyDat <- JoinLayers(harmonyDat)
+```
+
+### plots
+
+```{r}
+
+p1 <- DimPlot(object = harmonyDat, reduction = "harmony", pt.size = .1, group.by = "orig.ident")
+p2 <- VlnPlot(object = harmonyDat, features = "harmony_1", group.by = "orig.ident",  pt.size = .1)
+plot_grid(p1,p2)
+
+umapTime <- DimPlot(harmonyDat, reduction = 'umap', group.by = 'orig.ident', label = T) + NoLegend()
+umap01 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.0.1",label = T) + NoLegend()
+umap03 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.0.3",label = T) + NoLegend()
+umap05 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.0.5",label = T) + NoLegend()
+umap07 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.0.7",label = T) + NoLegend()
+umap1 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.1",label = T) + NoLegend()
+grid.arrange(umap01, umap03, umap05, umap07, umap1, umapTime, ncol = 3, nrow = 2,
+             top = textGrob("Harmony integration", gp=gpar(fontsize=20)))
+
+umap1 <- DimPlot(harmonyDat, reduction = "umap", group.by = "DF.classifications", label = T) + NoLegend()
+umap2 <- DimPlot(harmonyDat, reduction = 'umap', group.by = "RNA_snn_res.0.5",label = T) + NoLegend()
+grid.arrange(umap1, umap2, ncol = 2, nrow = 1,
+             top = textGrob("Batch Effects Investigation", gp=gpar(fontsize=20)))
+
+FeaturePlot(harmonyDat, features = c("Cpa1", "Zg16", "Krt19", "Sox9"))
+FeaturePlot(harmonyDat, features = c("Col1a1", "Rgs5", "Ptprc", "Pecam1"))
+```
+
+#### quality check of clusters
+
+```{r}
+
+VlnPlot(harmonyDat, features = "nFeature_RNA", group.by = "RNA_snn_res.1") + NoLegend()
+VlnPlot(harmonyDat, features = "nCount_RNA", group.by = "RNA_snn_res.1") + NoLegend()
+VlnPlot(harmonyDat, features = "qc.mito", group.by = "RNA_snn_res.1") + NoLegend()
+
+```
+
+```{r}
+datSingle <- subset(dat, subset = DF.classifications == 'Singlet')
+datDouble <- subset(dat, subset = DF.classifications == 'Doublet')
+
+umap1 <- DimPlot(dat, reduction = "umap", group.by = "DF.classifications", label = T) + NoLegend()
+umap2 <- DimPlot(dat, reduction = 'umap', group.by = "sctype0.5",label = T) + NoLegend()
+grid.arrange(umap1, umap2, ncol = 2, nrow = 1,
+             top = textGrob("Batch Effects Investigation", gp=gpar(fontsize=20)))
+
+umap1 <- DimPlot(datSingle, reduction = "umap", group.by = "sctype0.5", label = T) + NoLegend()
+umap2 <- DimPlot(datDouble, reduction = 'umap', group.by = "sctype0.5",label = F) + NoLegend()
+grid.arrange(umap1, umap2, ncol = 2, nrow = 1,
+             top = textGrob("Batch Effects Investigation", gp=gpar(fontsize=20)))
+
+FeaturePlot(dat, features = "pANN", cols = c("red", "green"))
+```
+
+
+
+### saving output
+
+```{r}
+saveRDS(dat, "FinaleProcessedData/QC6000clusteredDat.rds")
+saveRDS(harmonyDat, "FinaleProcessedData/QC6000clusteredDatHarmony.rds")
+```
+
